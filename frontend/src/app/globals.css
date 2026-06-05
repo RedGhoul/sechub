@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: theme(colors.ink);
+  color: #e6e9ef;
+  font-feature-settings: "tnum" 1;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-edge bg-panel p-5;
+  }
+  .pill {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .th {
+    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted;
+  }
+  .td {
+    @apply px-3 py-2 text-sm border-t border-edge;
+  }
+}

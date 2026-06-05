@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sechub
+      POSTGRES_PASSWORD: sechub
+      POSTGRES_DB: sechub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sechub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://sechub:sechub@db:5432/sechub
+      SECHUB_USER_AGENT: ${SECHUB_USER_AGENT:-SecHub/0.1 (you@example.com)}
+      SECHUB_MAX_RPS: ${SECHUB_MAX_RPS:-8}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://sechub:sechub@db:5432/sechub
+      SECHUB_USER_AGENT: ${SECHUB_USER_AGENT:-SecHub/0.1 (you@example.com)}
+      SECHUB_MAX_RPS: ${SECHUB_MAX_RPS:-8}
+      SECHUB_POLL_INTERVAL: ${SECHUB_POLL_INTERVAL:-120}
+      SECHUB_BACKFILL_CRON: ${SECHUB_BACKFILL_CRON:-0 5 * * *}
+      SECHUB_WATCH_FORMS: ${SECHUB_WATCH_FORMS:-13F-HR,4,SC 13D,SC 13G,NPORT-P}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    environment:
+      # Browser talks to the API on the host-published port.
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
