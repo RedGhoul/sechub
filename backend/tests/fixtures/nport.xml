@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport">
+  <formData>
+    <genInfo>
+      <repPdDate>2024-03-31</repPdDate>
+    </genInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>MICROSOFT CORP</name>
+        <cusip>594918104</cusip>
+        <valUSD>123456789.00</valUSD>
+        <balance>300000.00</balance>
+        <pctVal>5.25</pctVal>
+      </invstOrSec>
+      <invstOrSec>
+        <name>NVIDIA CORP</name>
+        <cusip>67066G104</cusip>
+        <valUSD>98765432.00</valUSD>
+        <balance>110000.00</balance>
+        <pctVal>4.10</pctVal>
+      </invstOrSec>
+    </invstOrSecs>
+  </formData>
+</edgarSubmission>
