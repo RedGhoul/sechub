@@ -72,3 +72,58 @@ class HolderOut(BaseModel):
     shares: int
     value: int
     period_of_report: date | None
+
+
+class PeriodOut(BaseModel):
+    """One 13F reporting period in a filer's history (for the time selector)."""
+
+    period: date
+    total_value: int
+    position_count: int
+
+
+class FundHoldingOut(BaseModel):
+    security: SecurityOut
+    value: int
+    balance: float | None
+    pct_of_net_assets: float | None
+
+
+class StakeOut(BaseModel):
+    """A 13D/13G beneficial-ownership stake, with both sides of the relation."""
+
+    filer: FilerOut  # who holds the stake
+    security: SecurityOut  # the company they hold it in
+    form_type: str
+    percent_of_class: float | None
+    shares: int | None
+    event_date: date | None
+    is_activist: bool
+
+
+class InsiderTxnOut(BaseModel):
+    security: SecurityOut  # the issuer the insider trades in
+    insider_name: str
+    insider_title: str | None
+    is_director: bool
+    is_officer: bool
+    is_ten_pct_owner: bool
+    txn_date: date | None
+    txn_code: str | None
+    is_derivative: bool
+    shares: float | None
+    price: float | None
+    acquired_disposed: str | None
+
+
+class IssuerActivityOut(BaseModel):
+    """The 'company' side of an entity: activity in *its own* securities.
+
+    Best-effort: securities are matched to the filer by name, since the SEC does
+    not provide a clean filer-CIK ↔ issuer-security join.
+    """
+
+    securities: list[SecurityOut]
+    insider_txns: list[InsiderTxnOut]
+    stakes_in: list[StakeOut]
+    top_holders: list[HolderOut]

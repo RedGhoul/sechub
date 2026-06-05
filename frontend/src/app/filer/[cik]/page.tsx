@@ -1,16 +1,32 @@
 import Link from "next/link";
-import { api, fmtUSD, fmtShares, fmtSignedShares, FilerDetail, Changes } from "@/lib/api";
-import { ActionPill } from "@/components/ActionPill";
+import {
+  api,
+  fmtUSD,
+  fmtShares,
+  fmtSignedShares,
+  FilerDetail,
+  Changes,
+  Period,
+  FundHolding,
+  Stake,
+  IssuerActivity,
+} from "@/lib/api";
+import { ActionPill, FormPill } from "@/components/ActionPill";
 
-export default async function FilerPage({ params }: { params: { cik: string } }) {
+export default async function FilerPage({
+  params,
+  searchParams,
+}: {
+  params: { cik: string };
+  searchParams: { period?: string };
+}) {
+  const { cik } = params;
+  const period = searchParams.period;
+
   let detail: FilerDetail | null = null;
-  let changes: Changes | null = null;
   let err: string | null = null;
   try {
-    [detail, changes] = await Promise.all([
-      api.filer(params.cik),
-      api.changes(params.cik).catch(() => null),
-    ]);
+    detail = await api.filer(cik, period);
   } catch (e) {
     err = String(e);
   }
@@ -21,14 +37,31 @@ export default async function FilerPage({ params }: { params: { cik: string } })
         <Link href="/" className="text-accent text-sm">
           ← back
         </Link>
-        <p className="mt-3 text-neg">Could not load filer {params.cik}: {err}</p>
+        <p className="mt-3 text-neg">Could not load entity {cik}: {err}</p>
         <p className="text-muted text-sm mt-2">
           It may not be ingested yet. Try{" "}
-          <code className="text-accent">POST /filings/ingest/{params.cik}</code>.
+          <code className="text-accent">POST /filings/ingest/{cik}</code> or run the
+          historical backfill.
         </p>
       </div>
     );
   }
+
+  // The investor side and the company side load independently; any one being
+  // empty just hides its section rather than failing the page.
+  const [periods, changes, funds, stakesHeld, issuer]: [
+    Period[],
+    Changes | null,
+    FundHolding[],
+    Stake[],
+    IssuerActivity | null
+  ] = await Promise.all([
+    api.periods(cik).catch(() => []),
+    api.changes(cik, period).catch(() => null),
+    api.fundHoldings(cik, period).catch(() => []),
+    api.stakesHeld(cik).catch(() => []),
+    api.issuerActivity(cik).catch(() => null),
+  ]);
 
   const { filer, holdings, total_value, position_count, period_of_report } = detail;
 
@@ -44,6 +77,10 @@ export default async function FilerPage({ params }: { params: { cik: string } })
           <span className="text-xs text-muted">CIK {filer.cik}</span>
         </div>
       </div>
+
+      {periods.length > 0 && (
+        <PeriodSelector cik={cik} periods={periods} active={period_of_report} />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat label="Portfolio value" value={fmtUSD(total_value)} />
@@ -92,52 +129,263 @@ export default async function FilerPage({ params }: { params: { cik: string } })
         </section>
       )}
 
-      <section className="card">
-        <h2 className="font-semibold mb-1">Portfolio</h2>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr>
-                <th className="th">Security</th>
-                <th className="th text-right">Shares</th>
-                <th className="th text-right">Value</th>
-                <th className="th text-right">% Port.</th>
-                <th className="th">Type</th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.map((h, i) => (
-                <tr key={i}>
-                  <td className="td">
-                    {h.security.cusip ? (
-                      <Link
-                        href={`/security/${h.security.cusip}`}
-                        className="hover:text-accent"
-                      >
-                        {h.security.name}
-                      </Link>
-                    ) : (
-                      h.security.name
-                    )}
-                  </td>
-                  <td className="td text-right">{fmtShares(h.shares)}</td>
-                  <td className="td text-right">{fmtUSD(h.value)}</td>
-                  <td className="td text-right text-muted">
-                    {h.pct_of_portfolio?.toFixed(2) ?? "—"}%
-                  </td>
-                  <td className="td">
-                    {h.put_call ? (
-                      <span className="pill bg-amber-500/15 text-amber-400">{h.put_call}</span>
-                    ) : (
-                      <span className="text-muted text-xs">{h.sh_prn_type}</span>
-                    )}
-                  </td>
+      {holdings.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Portfolio (13F)</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Security</th>
+                  <th className="th text-right">Shares</th>
+                  <th className="th text-right">Value</th>
+                  <th className="th text-right">% Port.</th>
+                  <th className="th">Type</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {holdings.map((h, i) => (
+                  <tr key={i}>
+                    <td className="td">
+                      {h.security.cusip ? (
+                        <Link href={`/security/${h.security.cusip}`} className="hover:text-accent">
+                          {h.security.name}
+                        </Link>
+                      ) : (
+                        h.security.name
+                      )}
+                    </td>
+                    <td className="td text-right">{fmtShares(h.shares)}</td>
+                    <td className="td text-right">{fmtUSD(h.value)}</td>
+                    <td className="td text-right text-muted">
+                      {h.pct_of_portfolio?.toFixed(2) ?? "—"}%
+                    </td>
+                    <td className="td">
+                      {h.put_call ? (
+                        <span className="pill bg-amber-500/15 text-amber-400">{h.put_call}</span>
+                      ) : (
+                        <span className="text-muted text-xs">{h.sh_prn_type}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {funds.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Fund holdings (N-PORT)</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Security</th>
+                  <th className="th text-right">Balance</th>
+                  <th className="th text-right">Value</th>
+                  <th className="th text-right">% Net assets</th>
+                </tr>
+              </thead>
+              <tbody>
+                {funds.map((h, i) => (
+                  <tr key={i}>
+                    <td className="td">{h.security.name}</td>
+                    <td className="td text-right">{h.balance == null ? "—" : fmtShares(h.balance)}</td>
+                    <td className="td text-right">{fmtUSD(h.value)}</td>
+                    <td className="td text-right text-muted">
+                      {h.pct_of_net_assets == null ? "—" : `${h.pct_of_net_assets.toFixed(2)}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {stakesHeld.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Stakes held (13D/13G)</h2>
+          <p className="text-muted text-xs mb-2">&gt;5% positions this entity holds in other companies.</p>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Company</th>
+                  <th className="th">Type</th>
+                  <th className="th text-right">% of class</th>
+                  <th className="th text-right">Shares</th>
+                  <th className="th text-right">As of</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stakesHeld.map((s, i) => (
+                  <tr key={i}>
+                    <td className="td">{s.security.name}</td>
+                    <td className="td">
+                      <FormPill form={s.form_type} />
+                      {s.is_activist && (
+                        <span className="pill bg-fuchsia-500/15 text-fuchsia-400 ml-1">activist</span>
+                      )}
+                    </td>
+                    <td className="td text-right">
+                      {s.percent_of_class == null ? "—" : `${s.percent_of_class.toFixed(2)}%`}
+                    </td>
+                    <td className="td text-right">{s.shares == null ? "—" : fmtShares(s.shares)}</td>
+                    <td className="td text-right text-muted">{s.event_date ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {issuer && issuer.insider_txns.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Insider trades (Form 3/4/5)</h2>
+          <p className="text-muted text-xs mb-2">Transactions by insiders in this company&apos;s stock.</p>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Date</th>
+                  <th className="th">Insider</th>
+                  <th className="th">Code</th>
+                  <th className="th text-right">Shares</th>
+                  <th className="th text-right">Price</th>
+                  <th className="th">A/D</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issuer.insider_txns.slice(0, 50).map((t, i) => (
+                  <tr key={i}>
+                    <td className="td text-muted">{t.txn_date ?? "—"}</td>
+                    <td className="td">
+                      {t.insider_name}
+                      {t.insider_title && (
+                        <span className="text-muted text-xs ml-1">({t.insider_title})</span>
+                      )}
+                    </td>
+                    <td className="td">{t.txn_code ?? "—"}</td>
+                    <td className="td text-right">{t.shares == null ? "—" : fmtShares(t.shares)}</td>
+                    <td className="td text-right">{t.price == null ? "—" : `$${t.price.toFixed(2)}`}</td>
+                    <td className={`td ${t.acquired_disposed === "A" ? "text-pos" : t.acquired_disposed === "D" ? "text-neg" : "text-muted"}`}>
+                      {t.acquired_disposed ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {issuer && issuer.stakes_in.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Activist & 5%+ stakes in this company</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Holder</th>
+                  <th className="th">Type</th>
+                  <th className="th text-right">% of class</th>
+                  <th className="th text-right">Shares</th>
+                  <th className="th text-right">As of</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issuer.stakes_in.map((s, i) => (
+                  <tr key={i}>
+                    <td className="td">
+                      <Link href={`/filer/${s.filer.cik}`} className="hover:text-accent">
+                        {s.filer.name}
+                      </Link>
+                    </td>
+                    <td className="td">
+                      <FormPill form={s.form_type} />
+                      {s.is_activist && (
+                        <span className="pill bg-fuchsia-500/15 text-fuchsia-400 ml-1">activist</span>
+                      )}
+                    </td>
+                    <td className="td text-right">
+                      {s.percent_of_class == null ? "—" : `${s.percent_of_class.toFixed(2)}%`}
+                    </td>
+                    <td className="td text-right">{s.shares == null ? "—" : fmtShares(s.shares)}</td>
+                    <td className="td text-right text-muted">{s.event_date ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {issuer && issuer.top_holders.length > 0 && (
+        <section className="card">
+          <h2 className="font-semibold mb-1">Institutional holders of this company</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">Institution</th>
+                  <th className="th text-right">Shares</th>
+                  <th className="th text-right">Value</th>
+                  <th className="th text-right">As of</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issuer.top_holders.map((h, i) => (
+                  <tr key={i}>
+                    <td className="td">
+                      <Link href={`/filer/${h.filer.cik}`} className="hover:text-accent">
+                        {h.filer.name}
+                      </Link>
+                    </td>
+                    <td className="td text-right">{fmtShares(h.shares)}</td>
+                    <td className="td text-right">{fmtUSD(h.value)}</td>
+                    <td className="td text-right text-muted">{h.period_of_report ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function PeriodSelector({
+  cik,
+  periods,
+  active,
+}: {
+  cik: string;
+  periods: Period[];
+  active: string | null;
+}) {
+  return (
+    <div className="card">
+      <div className="text-xs text-muted uppercase tracking-wide mb-2">13F history</div>
+      <div className="flex flex-wrap gap-2">
+        {periods.map((p) => {
+          const isActive = p.period === active;
+          return (
+            <Link
+              key={p.period}
+              href={`/filer/${cik}?period=${p.period}`}
+              className={`pill ${isActive ? "bg-accent/20 text-accent" : "bg-edge text-muted hover:text-accent"}`}
+              title={`${p.position_count} positions · ${fmtUSD(p.total_value)}`}
+            >
+              {p.period}
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }

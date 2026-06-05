@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Form types the real-time worker watches.
     sechub_watch_forms: str = "13F-HR,4,SC 13D,SC 13G,NPORT-P"
 
+    # Earliest year the historical backfill (``python -m app.backfill``) walks.
+    # EDGAR's full-index reaches back to 1993; the default is a recent-history
+    # window to keep an unattended run bounded. Lower it to go deeper.
+    sechub_backfill_since_year: int = 2014
+
     @property
     def watch_forms(self) -> list[str]:
         return [f.strip() for f in self.sechub_watch_forms.split(",") if f.strip()]

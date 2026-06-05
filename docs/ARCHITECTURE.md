@@ -8,12 +8,13 @@ structured data, and serves it through a REST API and a Next.js web UI.
 | Component | Path | Role |
 | --- | --- | --- |
 | EDGAR client | `backend/app/edgar/client.py` | One process-wide, rate-limited (≤10 rps) HTTP client with the required `User-Agent`, retries with backoff. **All** SEC requests go through it. |
-| Discovery | `backend/app/edgar/feed.py`, `indexes.py` | Real-time `getcurrent` feed + per-filer submissions JSON + daily-index backfill. Returns lightweight `FilingRef`s. |
+| Discovery | `backend/app/edgar/feed.py`, `indexes.py`, `full_index.py` | Real-time `getcurrent` feed + per-filer submissions JSON + daily-index backfill + quarterly **full-index** history walk. Returns lightweight `FilingRef`s. |
+| Backfill | `backend/app/backfill.py` | Walks the quarterly full-index from a start year to today, ingesting the complete history of the watched forms for **every** filer. Resumable via `backfill_progress`. |
 | Locator | `backend/app/edgar/locate.py` | Picks the right document inside a filing via its `index.json`. |
 | Parsers | `backend/app/edgar/parsers/` | Pure functions on raw bytes → DTOs. One per form family. Offline-testable. |
 | Pipeline | `backend/app/ingest/pipeline.py` | `FilingRef` → fetch → parse → upsert → diff. Idempotent on accession number. |
 | Diff | `backend/app/ingest/diff.py` | Quarter-over-quarter 13F deltas (NEW/ADD/TRIM/EXIT). |
-| API | `backend/app/api/routers/` | FastAPI: filers, filings feed, securities. |
+| API | `backend/app/api/routers/` | FastAPI: filers (search, historical 13F by period, periods list, fund holdings, stakes held, issuer-side activity), filings feed, securities. |
 | Worker | `backend/app/worker.py` | APScheduler: poll feed + nightly backfill. |
 | Frontend | `frontend/` | Next.js App Router; live feed, filer portfolios, holders. |
 
@@ -53,6 +54,17 @@ quarter-over-quarter diff.
 - **As-filed values only.** 13F values are quarter-end. `security.ticker` is the
   hook for a future live-price feed (multiply current price × reported shares);
   not implemented in the MVP.
+- **Entity = filer, with a best-effort issuer side.** An entity page is keyed on
+  a `Filer` (CIK). The *investor* side (13F history by period, fund holdings,
+  stakes it holds) joins cleanly on `filer_id`. The *issuer* side (insider trades
+  and 5%+ stakes in the entity's own stock, plus its institutional holders) lives
+  on `Security` rows created by *other* filers' documents; since the SEC gives no
+  clean filer-CIK ↔ issuer-security join, `/filers/{cik}/issuer-activity` matches
+  securities to the filer **by name** and is therefore best-effort.
+- **History coverage.** The real-time worker only sees new filings; full per-entity
+  history comes from the quarterly full-index backfill (`python -m app.cli
+  backfill-history`). It is a large, long-running, resumable batch — bounded by
+  `SECHUB_BACKFILL_SINCE_YEAR` (default 2014; set to 1993 for the full archive).
 
 ## Extending to a new form type
 
