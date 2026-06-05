@@ -1,0 +1,1 @@
+"""SecHub backend application package."""

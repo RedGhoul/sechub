@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/thirteenffiler">
+  <headerData>
+    <submissionType>13F-HR</submissionType>
+    <filerInfo>
+      <periodOfReport>03-31-2024</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>03-31-2024</reportCalendarOrQuarter>
+      <filingManager>
+        <name>EXAMPLE CAPITAL MANAGEMENT LLC</name>
+      </filingManager>
+    </coverPage>
+  </formData>
+</edgarSubmission>
