@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session
@@ -269,15 +269,18 @@ def filer_stakes_held(
 
 
 def _issuer_securities(db: Session, filer: Filer) -> list[Security]:
-    """Securities that represent this filer's own company (best-effort).
+    """Securities that represent this filer's own company.
 
     A company shows up as a ``Security`` only through *other* filers' documents
-    about it (Form 4 insider trades, 13D/G stakes). The SEC gives no clean
-    filer-CIK ↔ security join, so we match on the (normalized) name.
+    about it (Form 4 insider trades, 13D/G stakes). Form 3/4/5 record the
+    issuer's CIK, so we join on that exactly; for sources that don't (e.g.
+    13D/G cover pages), we fall back to a best-effort name match.
     """
     return list(
         db.execute(
-            select(Security).where(Security.name.ilike(filer.name))
+            select(Security).where(
+                or_(Security.issuer_cik == filer.cik, Security.name.ilike(filer.name))
+            )
         ).scalars()
     )
 

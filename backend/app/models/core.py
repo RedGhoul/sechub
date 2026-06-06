@@ -52,6 +52,9 @@ class Security(Base):
     cusip: Mapped[str | None] = mapped_column(String(9), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     ticker: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    # The issuer's own CIK, when a filing names it (Form 3/4/5). Lets us join a
+    # security back to the company's filer entity exactly, instead of by name.
+    issuer_cik: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
 
 
 class Filing(Base):

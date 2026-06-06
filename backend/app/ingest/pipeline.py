@@ -126,7 +126,7 @@ def _handle_ownership(db: Session, filing: Filing, ref: FilingRef) -> date | Non
         return None
     parsed = ownership.parse(edgar_client.get_bytes(xml_url))
     ticker = getattr(parsed, "issuer_ticker", None)
-    sec = get_or_create_security(db, parsed.issuer, ticker=ticker)
+    sec = get_or_create_security(db, parsed.issuer, ticker=ticker, issuer_cik=parsed.issuer_cik)
     for t in parsed.transactions:
         db.add(
             InsiderTxn(

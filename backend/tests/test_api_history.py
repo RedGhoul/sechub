@@ -60,14 +60,10 @@ def test_filer_detail_returns_requested_historical_period(db):
     assert latest.period_of_report == date(2024, 3, 31)
 
 
-def test_issuer_activity_matches_securities_by_name(db):
-    get_or_create_filer(db, "0000001067", "BERKSHIRE HATHAWAY INC")
-    sec = get_or_create_security(
-        db, SecurityRef(cusip="", name="BERKSHIRE HATHAWAY INC"), ticker="BRK"
-    )
-    insider = get_or_create_filer(db, "0000009999", "BUFFETT WARREN", kind="insider")
+def _add_insider_txn(db, insider_cik, insider_name, security):
+    insider = get_or_create_filer(db, insider_cik, insider_name, kind="insider")
     filing = Filing(
-        accession_no="acc-1",
+        accession_no=f"acc-{insider_cik}",
         filer_id=insider.id,
         form_type="4",
         filed_at=date(2024, 1, 1),
@@ -78,8 +74,8 @@ def test_issuer_activity_matches_securities_by_name(db):
     db.add(
         InsiderTxn(
             filing_id=filing.id,
-            security_id=sec.id,
-            insider_name="BUFFETT WARREN",
+            security_id=security.id,
+            insider_name=insider_name,
             txn_date=date(2024, 1, 1),
             acquired_disposed="A",
             shares=10,
@@ -87,9 +83,34 @@ def test_issuer_activity_matches_securities_by_name(db):
     )
     db.flush()
 
+
+def test_issuer_activity_joins_by_issuer_cik(db):
+    # The company files 13F under one name; insiders trade its stock recorded
+    # under a *different* name string. The CIK join must still connect them.
+    get_or_create_filer(db, "0000001067", "BERKSHIRE HATHAWAY INC")
+    sec = get_or_create_security(
+        db,
+        SecurityRef(cusip="", name="Berkshire Hathaway"),
+        ticker="BRK-A",
+        issuer_cik="0000001067",
+    )
+    assert sec.issuer_cik == "0000001067"  # persisted on the row
+    _add_insider_txn(db, "0000009999", "BUFFETT WARREN", sec)
+
     out = r.filer_issuer_activity("0000001067", limit=100, db=db)
     assert any(t.insider_name == "BUFFETT WARREN" for t in out.insider_txns)
-    assert any(s.name == "BERKSHIRE HATHAWAY INC" for s in out.securities)
+    assert sec.id in {s.id for s in out.securities}
+
+
+def test_issuer_activity_falls_back_to_name_match(db):
+    # No issuer CIK on the security (e.g. from a 13D/G cover page): the name
+    # match still surfaces it.
+    get_or_create_filer(db, "0000001067", "BERKSHIRE HATHAWAY INC")
+    sec = get_or_create_security(db, SecurityRef(cusip="084670108", name="BERKSHIRE HATHAWAY INC"))
+    _add_insider_txn(db, "0000009999", "SOME INSIDER", sec)
+
+    out = r.filer_issuer_activity("0000001067", limit=100, db=db)
+    assert any(t.insider_name == "SOME INSIDER" for t in out.insider_txns)
 
 
 def test_issuer_activity_empty_when_no_match(db):

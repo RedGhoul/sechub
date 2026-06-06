@@ -50,6 +50,7 @@ def get_or_create_security(
             cusip=ref.cusip or None,
             name=ref.name or key,
             ticker=ticker,
+            issuer_cik=issuer_cik,
         )
         db.add(sec)
         db.flush()
@@ -59,6 +60,8 @@ def get_or_create_security(
         sec.ticker = ticker
     if ref.cusip and not sec.cusip:
         sec.cusip = ref.cusip
+    if issuer_cik and not sec.issuer_cik:
+        sec.issuer_cik = issuer_cik
     if ref.name and (not sec.name or sec.name == key):
         sec.name = ref.name
     return sec

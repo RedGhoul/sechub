@@ -54,13 +54,15 @@ quarter-over-quarter diff.
 - **As-filed values only.** 13F values are quarter-end. `security.ticker` is the
   hook for a future live-price feed (multiply current price × reported shares);
   not implemented in the MVP.
-- **Entity = filer, with a best-effort issuer side.** An entity page is keyed on
-  a `Filer` (CIK). The *investor* side (13F history by period, fund holdings,
-  stakes it holds) joins cleanly on `filer_id`. The *issuer* side (insider trades
-  and 5%+ stakes in the entity's own stock, plus its institutional holders) lives
-  on `Security` rows created by *other* filers' documents; since the SEC gives no
-  clean filer-CIK ↔ issuer-security join, `/filers/{cik}/issuer-activity` matches
-  securities to the filer **by name** and is therefore best-effort.
+- **Entity = filer, with an issuer side.** An entity page is keyed on a `Filer`
+  (CIK). The *investor* side (13F history by period, fund holdings, stakes it
+  holds) joins cleanly on `filer_id`. The *issuer* side (insider trades and 5%+
+  stakes in the entity's own stock, plus its institutional holders) lives on
+  `Security` rows created by *other* filers' documents. Form 3/4/5 record the
+  issuer's CIK, which the pipeline stores on `security.issuer_cik`, so
+  `/filers/{cik}/issuer-activity` joins those **exactly** on CIK. Sources that
+  don't carry an issuer CIK (e.g. 13D/G cover pages) fall back to a best-effort
+  name match.
 - **History coverage.** The real-time worker only sees new filings; full per-entity
   history comes from the quarterly full-index backfill (`python -m app.cli
   backfill-history`). It is a large, long-running, resumable batch — bounded by

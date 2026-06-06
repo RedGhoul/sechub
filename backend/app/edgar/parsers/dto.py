@@ -56,6 +56,7 @@ class OwnershipFiling:
     is_officer: bool
     is_ten_pct_owner: bool
     period_of_report: date | None
+    issuer_cik: str | None = None
     transactions: list[InsiderTransaction] = field(default_factory=list)
 
 
@@ -66,6 +67,7 @@ class StakeFiling:
     shares: int | None
     event_date: date | None
     is_activist: bool
+    issuer_cik: str | None = None
 
 
 @dataclass
