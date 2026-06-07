@@ -1,4 +1,4 @@
-.PHONY: up down logs test ingest backfill backfill-history migrate fmt
+.PHONY: up down logs test test-frontend ingest backfill backfill-history migrate fmt
 
 # --- Docker stack ---
 up:            ## build + run the full stack (db, api, worker, frontend)
@@ -30,6 +30,9 @@ backfill-history:
 # --- Local dev (uses backend/.venv) ---
 test:          ## run the offline parser + diff tests
 	cd backend && . .venv/bin/activate && pytest -q
+
+test-frontend: ## run the frontend unit tests (Vitest)
+	cd frontend && npm test
 
 fmt:
 	cd backend && . .venv/bin/activate && ruff check --fix . && ruff format .
