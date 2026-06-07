@@ -26,6 +26,7 @@ structured data, and serves it through a REST API and a Next.js web UI.
 | Filer history | `data.sec.gov/submissions/CIK##########.json` |
 | Daily index | `www.sec.gov/Archives/edgar/daily-index/{year}/QTR{n}/form.{yyyymmdd}.idx` |
 | Filing docs | `www.sec.gov/Archives/edgar/data/{cik}/{accession}/index.json` |
+| Filing header | `www.sec.gov/Archives/edgar/data/{cik}/{accession}/{accession}-index-headers.html` |
 
 > **Access etiquette.** The SEC requires a descriptive `User-Agent` with contact
 > info and limits to 10 requests/sec per IP. `client.py` serializes requests
@@ -59,10 +60,11 @@ quarter-over-quarter diff.
   holds) joins cleanly on `filer_id`. The *issuer* side (insider trades and 5%+
   stakes in the entity's own stock, plus its institutional holders) lives on
   `Security` rows created by *other* filers' documents. Form 3/4/5 record the
-  issuer's CIK, which the pipeline stores on `security.issuer_cik`, so
-  `/filers/{cik}/issuer-activity` joins those **exactly** on CIK. Sources that
-  don't carry an issuer CIK (e.g. 13D/G cover pages) fall back to a best-effort
-  name match.
+  issuer's CIK inline; 13D/G cover pages don't, so the pipeline reads the
+  filing's SGML header (`-index-headers.html`) to recover the **subject
+  company's** CIK. Both paths populate `security.issuer_cik`, so
+  `/filers/{cik}/issuer-activity` joins on CIK **exactly**; the name match
+  remains only as a fallback when no header/issuer CIK is available.
 - **History coverage.** The real-time worker only sees new filings; full per-entity
   history comes from the quarterly full-index backfill (`python -m app.cli
   backfill-history`). It is a large, long-running, resumable batch — bounded by
