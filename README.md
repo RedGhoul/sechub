@@ -38,6 +38,22 @@ EDGAR (data.sec.gov + www.sec.gov)
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and the
 EDGAR endpoints used.
 
+## Resource requirements
+
+The scraper is rate-limited to ≤10 EDGAR requests/sec, so it's
+network-throttled rather than CPU-bound (~2–4 filings/sec ceiling).
+
+- **Steady state** (real-time worker): the whole stack — db, api, worker,
+  frontend — fits on **~2 vCPU / 4 GB RAM / 50 GB SSD**. Disk grows ~5 GB/yr
+  (~15–20 GB/yr with NPORT-P).
+- **Full historical backfill** (`python -m app.backfill`): a long-running,
+  resumable batch — **weeks (since 2014) to months (since 1993)** of continuous
+  scraping, ending in a **~100–130 GB** Postgres database (~30–40 GB without
+  NPORT-P, which is ~70% of the data).
+
+See [Resource requirements & sizing](docs/ARCHITECTURE.md#resource-requirements--sizing)
+for the full breakdown.
+
 ## Quick start (local)
 
 ```bash

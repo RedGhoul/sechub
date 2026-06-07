@@ -6,14 +6,29 @@ right file per form type rather than guessing filenames.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from app.edgar.client import edgar_client
 from app.edgar.common import filing_dir_url, filing_index_json_url
 
+# A single filing triggers several ``find_*`` calls (e.g. 13F looks up both the
+# primary doc and the information table), each of which would otherwise re-fetch
+# the same ``index.json``. Memoizing the listing collapses those into one rate-
+# limited request per filing. The cache is keyed on (cik, accession) and a small
+# bound is plenty since documents are located right after discovery.
+@lru_cache(maxsize=512)
+def _list_documents_cached(cik: str, accession: str) -> tuple[dict, ...]:
+    data = edgar_client.get_json(filing_index_json_url(cik, accession))
+    return tuple(data.get("directory", {}).get("item", []))
+
 
 def list_documents(cik: str, accession: str) -> list[dict]:
-    """Return ``[{name, type, ...}]`` for every document in the filing."""
-    data = edgar_client.get_json(filing_index_json_url(cik, accession))
-    return data.get("directory", {}).get("item", [])
+    """Return ``[{name, type, ...}]`` for every document in the filing.
+
+    The underlying ``index.json`` fetch is memoized per (cik, accession) so the
+    several locators run for one filing share a single EDGAR request.
+    """
+    return list(_list_documents_cached(cik, accession))
 
 
 def doc_url(cik: str, accession: str, name: str) -> str:
