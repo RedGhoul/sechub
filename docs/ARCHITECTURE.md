@@ -70,6 +70,61 @@ quarter-over-quarter diff.
   backfill-history`). It is a large, long-running, resumable batch — bounded by
   `SECHUB_BACKFILL_SINCE_YEAR` (default 2014; set to 1993 for the full archive).
 
+## Resource requirements & sizing
+
+Every SEC request funnels through one lock-serialized rate limiter
+(`edgar/client.py`, `SECHUB_MAX_RPS`, default **8 rps**, ceiling 10). The
+scraper is therefore **network-throttled, not CPU/RAM-bound** — it spends most
+of its time sleeping between requests. Each filing costs 2–4 EDGAR GETs (an
+`index.json` listing plus the document(s); `locate.py` memoizes the listing so
+the several locators for one filing share a single request), so throughput is
+capped at roughly **2–4 filings/second** regardless of hardware.
+
+### Scenario A — steady state (real-time worker)
+
+The default `worker`: poll `getcurrent` every `SECHUB_POLL_INTERVAL`s plus the
+nightly 3-day catch-up. Daily volume (~2–3k Form 4s/day, quarter-clustered 13Fs,
+~12k NPORTs/month) sits far below the rate ceiling, so the worker is mostly idle.
+
+| Component | vCPU | RAM | Notes |
+| --- | --- | --- | --- |
+| worker | 0.5 | 1 GB | CPU near-idle; RAM spikes from lxml parsing large 13F/NPORT XML |
+| api | 0.5 | 512 MB | scales with request concurrency |
+| frontend | 0.25–0.5 | 256–512 MB | Next.js standalone |
+| db | 1 | 1–2 GB | |
+
+A single **~2 vCPU / 4 GB RAM / 50 GB SSD** node runs the whole stack. Disk
+grows ~5 GB/yr without NPORT, ~15–20 GB/yr with NPORT-P enabled.
+
+### Scenario B — full historical backfill (`python -m app.backfill`)
+
+Walks the quarterly full-index for **every** filer. This is where the cost
+lives. Bounded by `SECHUB_BACKFILL_SINCE_YEAR` (default 2014; 1993 for the full
+archive). Resumable per quarter via `backfill_progress`.
+
+| Start year | Filings (~) | Wall-clock @ ~2.5 filings/s |
+| --- | --- | --- |
+| 2014 (default) | ~8–10M | ~6–8 weeks continuous |
+| 1993 (full archive) | ~15M+ | ~2.5–3 months continuous |
+
+It's single-threaded and rate-limited by the SEC, so it can't be sped up with
+more cores — the same 1 vCPU / 1 GB box runs it; just leave it going.
+
+**Resulting Postgres size** (rows ≈ 250 B all-in with indexes):
+
+| Table | Rows (~) | Size (~) |
+| --- | --- | --- |
+| `fund_holding` (NPORT) | 360M | 90 GB ⚠️ dominates |
+| `holding` (13F) | 75M | 19 GB |
+| `insider_txn` (3/4/5) | 20M | 5 GB |
+| `ownership_stake` / `security` / `filer` | — | 1–2 GB |
+| **Total full archive** | | **~100–130 GB** |
+| **Excluding NPORT** | | **~30–40 GB** |
+
+NPORT-P is ~70% of the storage. Dropping it from `SECHUB_WATCH_FORMS` roughly
+halves both disk and backfill time. For a 100 GB+ dataset, give Postgres
+**2–4 vCPU / 8 GB RAM** and provision **150–200 GB disk** with headroom.
+
 ## Extending to a new form type
 
 1. Add a parser in `edgar/parsers/` returning a DTO from raw bytes.
