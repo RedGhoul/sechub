@@ -6,6 +6,9 @@ ingest-filer <cik> [--forms 13F-HR,4] [--limit N]
     Pull and ingest a specific filer's recent filings.
 backfill [--forms ...] [--days N]
     Backfill recent days from the EDGAR daily index.
+backfill-history [--forms ...] [--since-year YYYY]
+    Backfill the full history of the watched forms from the quarterly
+    full-index (every entity, every quarter). Resumable; long-running.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+from app.backfill import run_backfill
 from app.config import settings
 from app.db import SessionLocal
 from app.edgar.feed import fetch_filer_history
@@ -52,6 +56,12 @@ def _backfill(args: argparse.Namespace) -> None:
     print(f"ingested {count} new filings")
 
 
+def _backfill_history(args: argparse.Namespace) -> None:
+    forms = {f.strip() for f in args.forms.split(",") if f.strip()} or set(settings.watch_forms)
+    print(f"backfilling history from {args.since_year} for forms {sorted(forms)}")
+    run_backfill(args.since_year, forms)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sechub")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -66,6 +76,13 @@ def main() -> None:
     p_back.add_argument("--forms", default="")
     p_back.add_argument("--days", type=int, default=3)
     p_back.set_defaults(func=_backfill)
+
+    p_hist = sub.add_parser(
+        "backfill-history", help="backfill full history from the quarterly full-index"
+    )
+    p_hist.add_argument("--forms", default="")
+    p_hist.add_argument("--since-year", type=int, default=settings.sechub_backfill_since_year)
+    p_hist.set_defaults(func=_backfill_history)
 
     args = parser.parse_args()
     args.func(args)

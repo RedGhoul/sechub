@@ -9,6 +9,7 @@ from app.models.holdings import Holding, HoldingChange  # noqa: F401
 from app.models.insider import InsiderTxn  # noqa: F401
 from app.models.stake import OwnershipStake  # noqa: F401
 from app.models.fund import FundHolding  # noqa: F401
+from app.models.backfill import BackfillProgress  # noqa: F401
 
 __all__ = [
     "Filer",
@@ -19,4 +20,5 @@ __all__ = [
     "InsiderTxn",
     "OwnershipStake",
     "FundHolding",
+    "BackfillProgress",
 ]

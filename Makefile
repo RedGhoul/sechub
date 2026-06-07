@@ -1,4 +1,4 @@
-.PHONY: up down logs test ingest backfill migrate fmt
+.PHONY: up down logs test ingest backfill backfill-history migrate fmt
 
 # --- Docker stack ---
 up:            ## build + run the full stack (db, api, worker, frontend)
@@ -21,6 +21,11 @@ ingest:
 # Backfill recent days from the daily index: make backfill FORMS=13F-HR DAYS=3
 backfill:
 	docker compose exec api python -m app.cli backfill --forms $(or $(FORMS),13F-HR) --days $(or $(DAYS),3)
+
+# Backfill full history for every entity from the quarterly full-index.
+# Long-running + resumable:  make backfill-history SINCE=2014 FORMS=13F-HR
+backfill-history:
+	docker compose exec api python -m app.cli backfill-history --since-year $(or $(SINCE),2014) $(if $(FORMS),--forms $(FORMS),)
 
 # --- Local dev (uses backend/.venv) ---
 test:          ## run the offline parser + diff tests

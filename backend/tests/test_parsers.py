@@ -44,6 +44,7 @@ def test_form4_ownership():
     assert parsed.is_officer is True
     assert parsed.is_director is False
     assert getattr(parsed, "issuer_ticker") == "AAPL"
+    assert parsed.issuer_cik == "0000320193"  # exact handle on the issuer
     assert len(parsed.transactions) == 1
 
     txn = parsed.transactions[0]

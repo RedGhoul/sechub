@@ -14,7 +14,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.edgar import locate
+from app.edgar import header, locate
 from app.edgar.client import edgar_client
 from app.edgar.common import filing_dir_url
 from app.edgar.feed import FilingRef
@@ -126,7 +126,7 @@ def _handle_ownership(db: Session, filing: Filing, ref: FilingRef) -> date | Non
         return None
     parsed = ownership.parse(edgar_client.get_bytes(xml_url))
     ticker = getattr(parsed, "issuer_ticker", None)
-    sec = get_or_create_security(db, parsed.issuer, ticker=ticker)
+    sec = get_or_create_security(db, parsed.issuer, ticker=ticker, issuer_cik=parsed.issuer_cik)
     for t in parsed.transactions:
         db.add(
             InsiderTxn(
@@ -160,7 +160,10 @@ def _handle_stake(db: Session, filing: Filing, ref: FilingRef) -> date | None:
         form_type=ref.form_type,
         issuer_hint=ref.filer_name,
     )
-    sec = get_or_create_security(db, parsed.issuer)
+    # The cover page has no issuer CIK; recover it from the filing's SGML header
+    # so the stake joins to its issuer exactly (falls back to CUSIP/name).
+    subject_cik = header.fetch_subject_cik(ref.cik, ref.accession_no)
+    sec = get_or_create_security(db, parsed.issuer, issuer_cik=subject_cik)
     db.add(
         OwnershipStake(
             filing_id=filing.id,

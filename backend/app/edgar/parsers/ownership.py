@@ -11,6 +11,7 @@ from datetime import date, datetime
 
 from lxml import etree
 
+from app.edgar.common import format_cik
 from app.edgar.parsers.dto import InsiderTransaction, OwnershipFiling, SecurityRef
 from app.edgar.parsers.xmlutil import child, iter_named, text
 
@@ -20,6 +21,10 @@ def parse(xml: bytes) -> OwnershipFiling:
 
     issuer_name = text(root, "issuerName") or ""
     ticker = (text(root, "issuerTradingSymbol") or "").strip().upper() or None
+    # The ownership XML carries the issuer's CIK directly — an exact handle on
+    # the company the insider trades in, used to join back to its filer entity.
+    raw_cik = text(root, "issuerCik")
+    issuer_cik = format_cik(raw_cik) if raw_cik else None
     issuer = SecurityRef(cusip="", name=issuer_name)
     # Stash the ticker on the ref via name-less channel: pipeline reads it below.
     issuer_ticker = ticker
@@ -35,6 +40,7 @@ def parse(xml: bytes) -> OwnershipFiling:
         is_officer=_flag(text(rel, "isOfficer")) if rel is not None else False,
         is_ten_pct_owner=_flag(text(rel, "isTenPercentOwner")) if rel is not None else False,
         period_of_report=_parse_date(text(root, "periodOfReport")),
+        issuer_cik=issuer_cik,
         transactions=[],
     )
     # Carry ticker out-of-band for the pipeline (SecurityRef has no ticker field).
