@@ -2,47 +2,47 @@
 
 from __future__ import annotations
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.db import get_session
-from app.models import Filer, Filing, Holding, Security
-from app.schemas import FilerOut, HolderOut
+from app.api.serialize import FILER_COLS, filer_out
+from app.db import get_connection
+from app.schemas import HolderOut
 
 router = APIRouter(prefix="/securities", tags=["securities"])
 
 
 @router.get("/{cusip}/holders", response_model=list[HolderOut])
-def holders(cusip: str, db: Session = Depends(get_session)) -> list[HolderOut]:
+def holders(cusip: str, conn: psycopg.Connection = Depends(get_connection)) -> list[HolderOut]:
     """Institutions holding a security, by their latest reported position."""
-    sec = db.execute(
-        select(Security).where(Security.cusip == cusip.upper())
-    ).scalar_one_or_none()
+    sec = conn.execute("SELECT id FROM security WHERE cusip = %s", (cusip.upper(),)).fetchone()
     if sec is None:
         raise HTTPException(404, "security not found")
 
-    # Latest holding per filer for this security.
-    rows = db.execute(
-        select(Holding, Filing, Filer)
-        .join(Filing, Holding.filing_id == Filing.id)
-        .join(Filer, Filing.filer_id == Filer.id)
-        .where(Holding.security_id == sec.id)
-        .order_by(Filer.id, Filing.period_of_report.desc().nullslast())
-    ).all()
+    # Latest holding per filer for this security: ordered by filer then newest
+    # period, we keep the first row seen per filer.
+    rows = conn.execute(
+        f"""SELECT h.shares, h.value, fl.period_of_report, {FILER_COLS}
+              FROM holding h
+              JOIN filing fl ON h.filing_id = fl.id
+              JOIN filer fr ON fl.filer_id = fr.id
+             WHERE h.security_id = %s
+             ORDER BY fr.id, fl.period_of_report DESC NULLS LAST""",
+        (sec["id"],),
+    ).fetchall()
 
     seen: set[int] = set()
     out: list[HolderOut] = []
-    for holding, filing, filer in rows:
-        if filer.id in seen:
+    for r in rows:
+        if r["filer_id"] in seen:
             continue
-        seen.add(filer.id)
+        seen.add(r["filer_id"])
         out.append(
             HolderOut(
-                filer=FilerOut.model_validate(filer),
-                shares=holding.shares,
-                value=holding.value,
-                period_of_report=filing.period_of_report,
+                filer=filer_out(r),
+                shares=r["shares"],
+                value=r["value"],
+                period_of_report=r["period_of_report"],
             )
         )
     out.sort(key=lambda h: h.value, reverse=True)

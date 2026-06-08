@@ -22,14 +22,12 @@ import argparse
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+import psycopg
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import connect
 from app.edgar import full_index
 from app.ingest.pipeline import ingest_filing
-from app.models import BackfillProgress
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("sechub.backfill")
@@ -38,61 +36,71 @@ log = logging.getLogger("sechub.backfill")
 _CHECKPOINT_EVERY = 100
 
 
-def _segment(db: Session, year: int, quarter: int) -> BackfillProgress:
-    seg = db.execute(
-        select(BackfillProgress).where(
-            BackfillProgress.year == year, BackfillProgress.quarter == quarter
-        )
-    ).scalar_one_or_none()
+def _segment(conn: psycopg.Connection, year: int, quarter: int) -> dict:
+    seg = conn.execute(
+        "SELECT * FROM backfill_progress WHERE year = %s AND quarter = %s",
+        (year, quarter),
+    ).fetchone()
     if seg is None:
-        seg = BackfillProgress(year=year, quarter=quarter)
-        db.add(seg)
-        db.flush()
+        seg = conn.execute(
+            "INSERT INTO backfill_progress (year, quarter) VALUES (%s, %s) RETURNING *",
+            (year, quarter),
+        ).fetchone()
+        conn.commit()
     return seg
 
 
-def backfill_quarter(db: Session, year: int, quarter: int, forms: set[str]) -> int:
+def backfill_quarter(conn: psycopg.Connection, year: int, quarter: int, forms: set[str]) -> int:
     """Ingest one quarter's full index. Returns the number of new filings."""
-    seg = _segment(db, year, quarter)
-    if seg.completed_at is not None:
+    seg = _segment(conn, year, quarter)
+    if seg["completed_at"] is not None:
         log.info("skip %dQ%d (already complete)", year, quarter)
         return 0
 
     refs = full_index.fetch_quarter(year, quarter, forms)
-    seg.forms = ",".join(sorted(forms))
-    seg.filings_seen = len(refs)
-    db.commit()
+    conn.execute(
+        "UPDATE backfill_progress SET forms = %s, filings_seen = %s WHERE id = %s",
+        (",".join(sorted(forms)), len(refs), seg["id"]),
+    )
+    conn.commit()
     log.info("%dQ%d: %d candidate filings", year, quarter, len(refs))
 
     ingested = 0
     for ref in refs:
-        if ingest_filing(db, ref) is not None:
+        if ingest_filing(conn, ref) is not None:
             ingested += 1
             if ingested % _CHECKPOINT_EVERY == 0:
-                seg.filings_ingested = ingested
-                db.commit()
+                conn.execute(
+                    "UPDATE backfill_progress SET filings_ingested = %s WHERE id = %s",
+                    (ingested, seg["id"]),
+                )
+                conn.commit()
                 log.info("%dQ%d: %d ingested so far", year, quarter, ingested)
 
-    seg.filings_ingested = ingested
-    seg.completed_at = datetime.now(tz=timezone.utc)
-    db.commit()
+    conn.execute(
+        "UPDATE backfill_progress SET filings_ingested = %s, completed_at = %s WHERE id = %s",
+        (ingested, datetime.now(tz=timezone.utc), seg["id"]),
+    )
+    conn.commit()
     log.info("%dQ%d done: %d new filings", year, quarter, ingested)
     return ingested
 
 
 def run_backfill(since_year: int, forms: set[str]) -> None:
-    db = SessionLocal()
+    conn = connect()
     total = 0
     try:
         for year, quarter in full_index.quarters_in_range(since_year):
-            total += backfill_quarter(db, year, quarter, forms)
+            total += backfill_quarter(conn, year, quarter, forms)
     finally:
-        db.close()
+        conn.close()
     log.info("backfill complete: %d new filings total", total)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backfill SEC filing history from EDGAR full-index.")
+    parser = argparse.ArgumentParser(
+        description="Backfill SEC filing history from EDGAR full-index."
+    )
     parser.add_argument(
         "--since-year",
         type=int,

@@ -5,22 +5,12 @@ from __future__ import annotations
 
 from datetime import date
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
 
-from app.db import get_session
+from app.api.serialize import FILER_COLS, SECURITY_COLS, filer_out, security_out
+from app.db import get_connection
 from app.edgar.common import format_cik
-from app.models import (
-    Filer,
-    Filing,
-    FundHolding,
-    Holding,
-    HoldingChange,
-    InsiderTxn,
-    OwnershipStake,
-    Security,
-)
 from app.schemas import (
     ChangesOut,
     FilerDetailOut,
@@ -44,57 +34,69 @@ def list_filers(
     q: str | None = Query(None, description="name substring"),
     kind: str | None = Query(None, description="institution|insider|fund"),
     limit: int = Query(50, le=200),
-    db: Session = Depends(get_session),
-) -> list[Filer]:
-    stmt = select(Filer)
+    conn: psycopg.Connection = Depends(get_connection),
+) -> list[dict]:
+    sql = "SELECT * FROM filer"
+    clauses: list[str] = []
+    params: list = []
     if q:
-        stmt = stmt.where(Filer.name.ilike(f"%{q}%"))
+        clauses.append("name ILIKE %s")
+        params.append(f"%{q}%")
     if kind:
-        stmt = stmt.where(Filer.kind == kind)
-    stmt = stmt.order_by(Filer.latest_filing_at.desc().nullslast()).limit(limit)
-    return list(db.execute(stmt).scalars())
+        clauses.append("kind = %s")
+        params.append(kind)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY latest_filing_at DESC NULLS LAST LIMIT %s"
+    params.append(limit)
+    return conn.execute(sql, params).fetchall()
 
 
-def _resolve_filer(db: Session, cik: str) -> Filer:
-    filer = db.execute(
-        select(Filer).where(Filer.cik == format_cik(cik))
-    ).scalar_one_or_none()
+def _resolve_filer(conn: psycopg.Connection, cik: str) -> dict:
+    filer = conn.execute("SELECT * FROM filer WHERE cik = %s", (format_cik(cik),)).fetchone()
     if filer is None:
         raise HTTPException(404, "filer not found")
     return filer
 
 
-def _latest_13f_period(db: Session, filer_id: int) -> date | None:
-    return db.execute(
-        select(Filing.period_of_report)
-        .where(Filing.filer_id == filer_id, Filing.form_type.like("13F%"))
-        .order_by(Filing.period_of_report.desc().nullslast())
-        .limit(1)
-    ).scalar_one_or_none()
+def _latest_13f_period(conn: psycopg.Connection, filer_id: int) -> date | None:
+    row = conn.execute(
+        """SELECT period_of_report
+             FROM filing
+            WHERE filer_id = %s AND form_type LIKE '13F%%'
+            ORDER BY period_of_report DESC NULLS LAST
+            LIMIT 1""",
+        (filer_id,),
+    ).fetchone()
+    return row["period_of_report"] if row else None
 
 
 @router.get("/{cik}/periods", response_model=list[PeriodOut])
-def filer_periods(cik: str, db: Session = Depends(get_session)) -> list[PeriodOut]:
+def filer_periods(cik: str, conn: psycopg.Connection = Depends(get_connection)) -> list[PeriodOut]:
     """Every 13F reporting period this filer has on record, newest first.
 
     Powers the historical quarter selector and a portfolio-value-over-time view.
     """
-    filer = _resolve_filer(db, cik)
-    rows = db.execute(
-        select(
-            Filing.period_of_report,
-            func.coalesce(func.sum(Holding.value), 0),
-            func.count(Holding.id),
-        )
-        .join(Holding, Holding.filing_id == Filing.id)
-        .where(Filing.filer_id == filer.id, Filing.form_type.like("13F%"))
-        .group_by(Filing.period_of_report)
-        .order_by(Filing.period_of_report.desc().nullslast())
-    ).all()
+    filer = _resolve_filer(conn, cik)
+    rows = conn.execute(
+        """SELECT f.period_of_report AS period,
+                  COALESCE(SUM(h.value), 0) AS total_value,
+                  COUNT(h.id) AS position_count
+             FROM filing f
+             JOIN holding h ON h.filing_id = f.id
+            WHERE f.filer_id = %s AND f.form_type LIKE '13F%%'
+            GROUP BY f.period_of_report
+            ORDER BY f.period_of_report DESC NULLS LAST""",
+        (filer["id"],),
+    ).fetchall()
     return [
-        PeriodOut(period=period, total_value=int(total), position_count=count)
-        for period, total, count in rows
-        if period is not None
+        PeriodOut(
+            period=r["period"],
+            total_value=int(r["total_value"]),
+            position_count=r["position_count"],
+        )
+        for r in rows
+        if r["period"] is not None
     ]
 
 
@@ -102,37 +104,35 @@ def filer_periods(cik: str, db: Session = Depends(get_session)) -> list[PeriodOu
 def filer_detail(
     cik: str,
     period: date | None = Query(None, description="YYYY-MM-DD; defaults to latest"),
-    db: Session = Depends(get_session),
+    conn: psycopg.Connection = Depends(get_connection),
 ) -> FilerDetailOut:
     """The filer's 13F portfolio for a period (latest by default), with each
     position's % of the portfolio."""
-    filer = _resolve_filer(db, cik)
+    filer = _resolve_filer(conn, cik)
 
-    target_period = period or _latest_13f_period(db, filer.id)
+    target_period = period or _latest_13f_period(conn, filer["id"])
 
-    holdings: list[Holding] = []
+    holdings: list[dict] = []
     if target_period is not None:
-        holdings = list(
-            db.execute(
-                select(Holding)
-                .join(Filing, Holding.filing_id == Filing.id)
-                .where(
-                    Filing.filer_id == filer.id,
-                    Filing.period_of_report == target_period,
-                )
-                .order_by(Holding.value.desc())
-            ).scalars()
-        )
+        holdings = conn.execute(
+            f"""SELECT h.value, h.shares, h.sh_prn_type, h.put_call, {SECURITY_COLS}
+                  FROM holding h
+                  JOIN filing f ON h.filing_id = f.id
+                  JOIN security s ON h.security_id = s.id
+                 WHERE f.filer_id = %s AND f.period_of_report = %s
+                 ORDER BY h.value DESC""",
+            (filer["id"], target_period),
+        ).fetchall()
 
-    total_value = sum(h.value for h in holdings)
+    total_value = sum(h["value"] for h in holdings)
     out_holdings = [
         HoldingOut(
-            security=SecurityOut.model_validate(h.security),
-            value=h.value,
-            shares=h.shares,
-            sh_prn_type=h.sh_prn_type,
-            put_call=h.put_call,
-            pct_of_portfolio=round(h.value / total_value * 100, 2) if total_value else None,
+            security=security_out(h),
+            value=h["value"],
+            shares=h["shares"],
+            sh_prn_type=h["sh_prn_type"],
+            put_call=h["put_call"],
+            pct_of_portfolio=round(h["value"] / total_value * 100, 2) if total_value else None,
         )
         for h in holdings
     ]
@@ -149,49 +149,48 @@ def filer_detail(
 @router.get("/{cik}/changes", response_model=ChangesOut)
 def filer_changes(
     cik: str,
-    period: str | None = Query(None, description="YYYY-MM-DD; defaults to latest"),
-    db: Session = Depends(get_session),
+    period: date | None = Query(None, description="YYYY-MM-DD; defaults to latest"),
+    conn: psycopg.Connection = Depends(get_connection),
 ) -> ChangesOut:
     """NEW / ADD / TRIM / EXIT positions for a quarter."""
-    filer = _resolve_filer(db, cik)
+    filer = _resolve_filer(conn, cik)
 
     target_period = period
     if target_period is None:
-        target_period = db.execute(
-            select(HoldingChange.period)
-            .where(HoldingChange.filer_id == filer.id)
-            .order_by(HoldingChange.period.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        row = conn.execute(
+            """SELECT period FROM holding_change
+                WHERE filer_id = %s ORDER BY period DESC LIMIT 1""",
+            (filer["id"],),
+        ).fetchone()
+        target_period = row["period"] if row else None
 
-    rows: list[HoldingChange] = []
+    rows: list[dict] = []
     prev_period = None
     if target_period is not None:
-        rows = list(
-            db.execute(
-                select(HoldingChange)
-                .where(
-                    HoldingChange.filer_id == filer.id,
-                    HoldingChange.period == target_period,
-                )
-                .order_by(func.abs(HoldingChange.value_delta).desc())
-            ).scalars()
-        )
-        prev_period = rows[0].prev_period if rows else None
+        rows = conn.execute(
+            f"""SELECT hc.action, hc.shares_delta, hc.value_delta, hc.pct_change,
+                       hc.prev_period, {SECURITY_COLS}
+                  FROM holding_change hc
+                  JOIN security s ON hc.security_id = s.id
+                 WHERE hc.filer_id = %s AND hc.period = %s
+                 ORDER BY ABS(hc.value_delta) DESC""",
+            (filer["id"], target_period),
+        ).fetchall()
+        prev_period = rows[0]["prev_period"] if rows else None
 
     return ChangesOut(
         filer=FilerOut.model_validate(filer),
-        period=target_period,  # str from query or date from DB; pydantic coerces
+        period=target_period,
         prev_period=prev_period,
         changes=[
             HoldingChangeOut(
-                security=SecurityOut.model_validate(c.security),
-                action=c.action,
-                shares_delta=c.shares_delta,
-                value_delta=c.value_delta,
-                pct_change=float(c.pct_change) if c.pct_change is not None else None,
+                security=security_out(r),
+                action=r["action"],
+                shares_delta=r["shares_delta"],
+                value_delta=r["value_delta"],
+                pct_change=float(r["pct_change"]) if r["pct_change"] is not None else None,
             )
-            for c in rows
+            for r in rows
         ],
     )
 
@@ -201,41 +200,47 @@ def filer_fund_holdings(
     cik: str,
     period: date | None = Query(None, description="YYYY-MM-DD; defaults to latest N-PORT"),
     limit: int = Query(500, le=2000),
-    db: Session = Depends(get_session),
+    conn: psycopg.Connection = Depends(get_connection),
 ) -> list[FundHoldingOut]:
     """A fund's NPORT-P portfolio for a period (latest by default)."""
-    filer = _resolve_filer(db, cik)
+    filer = _resolve_filer(conn, cik)
 
     target_period = period
     if target_period is None:
-        target_period = db.execute(
-            select(Filing.period_of_report)
-            .join(FundHolding, FundHolding.filing_id == Filing.id)
-            .where(Filing.filer_id == filer.id)
-            .order_by(Filing.period_of_report.desc().nullslast())
-            .limit(1)
-        ).scalar_one_or_none()
+        row = conn.execute(
+            """SELECT f.period_of_report
+                 FROM filing f
+                 JOIN fund_holding fh ON fh.filing_id = f.id
+                WHERE f.filer_id = %s
+                ORDER BY f.period_of_report DESC NULLS LAST
+                LIMIT 1""",
+            (filer["id"],),
+        ).fetchone()
+        target_period = row["period_of_report"] if row else None
 
     if target_period is None:
         return []
 
-    rows = list(
-        db.execute(
-            select(FundHolding)
-            .join(Filing, FundHolding.filing_id == Filing.id)
-            .where(Filing.filer_id == filer.id, Filing.period_of_report == target_period)
-            .order_by(FundHolding.value.desc())
-            .limit(limit)
-        ).scalars()
-    )
+    rows = conn.execute(
+        f"""SELECT fh.value, fh.balance, fh.pct_of_net_assets, {SECURITY_COLS}
+              FROM fund_holding fh
+              JOIN filing f ON fh.filing_id = f.id
+              JOIN security s ON fh.security_id = s.id
+             WHERE f.filer_id = %s AND f.period_of_report = %s
+             ORDER BY fh.value DESC
+             LIMIT %s""",
+        (filer["id"], target_period, limit),
+    ).fetchall()
     return [
         FundHoldingOut(
-            security=SecurityOut.model_validate(h.security),
-            value=h.value,
-            balance=float(h.balance) if h.balance is not None else None,
-            pct_of_net_assets=float(h.pct_of_net_assets) if h.pct_of_net_assets is not None else None,
+            security=security_out(r),
+            value=r["value"],
+            balance=float(r["balance"]) if r["balance"] is not None else None,
+            pct_of_net_assets=float(r["pct_of_net_assets"])
+            if r["pct_of_net_assets"] is not None
+            else None,
         )
-        for h in rows
+        for r in rows
     ]
 
 
@@ -243,130 +248,145 @@ def filer_fund_holdings(
 def filer_stakes_held(
     cik: str,
     limit: int = Query(200, le=500),
-    db: Session = Depends(get_session),
+    conn: psycopg.Connection = Depends(get_connection),
 ) -> list[StakeOut]:
     """13D/13G beneficial-ownership stakes this filer holds in other companies."""
-    filer = _resolve_filer(db, cik)
-    rows = db.execute(
-        select(OwnershipStake, Filing)
-        .join(Filing, OwnershipStake.filing_id == Filing.id)
-        .where(Filing.filer_id == filer.id)
-        .order_by(Filing.filed_at.desc())
-        .limit(limit)
-    ).all()
+    filer = _resolve_filer(conn, cik)
+    rows = conn.execute(
+        f"""SELECT os.percent_of_class, os.shares, os.event_date, os.is_activist,
+                   fl.form_type, {SECURITY_COLS}
+              FROM ownership_stake os
+              JOIN filing fl ON os.filing_id = fl.id
+              JOIN security s ON os.security_id = s.id
+             WHERE fl.filer_id = %s
+             ORDER BY fl.filed_at DESC
+             LIMIT %s""",
+        (filer["id"], limit),
+    ).fetchall()
+    filer_model = FilerOut.model_validate(filer)
     return [
         StakeOut(
-            filer=FilerOut.model_validate(filer),
-            security=SecurityOut.model_validate(stake.security),
-            form_type=filing.form_type,
-            percent_of_class=float(stake.percent_of_class) if stake.percent_of_class is not None else None,
-            shares=stake.shares,
-            event_date=stake.event_date,
-            is_activist=stake.is_activist,
+            filer=filer_model,
+            security=security_out(r),
+            form_type=r["form_type"],
+            percent_of_class=float(r["percent_of_class"])
+            if r["percent_of_class"] is not None
+            else None,
+            shares=r["shares"],
+            event_date=r["event_date"],
+            is_activist=r["is_activist"],
         )
-        for stake, filing in rows
+        for r in rows
     ]
 
 
-def _issuer_securities(db: Session, filer: Filer) -> list[Security]:
+def _issuer_securities(conn: psycopg.Connection, filer: dict) -> list[dict]:
     """Securities that represent this filer's own company.
 
-    A company shows up as a ``Security`` only through *other* filers' documents
+    A company shows up as a ``security`` only through *other* filers' documents
     about it (Form 4 insider trades, 13D/G stakes). Form 3/4/5 record the
     issuer's CIK, so we join on that exactly; for sources that don't (e.g.
     13D/G cover pages), we fall back to a best-effort name match.
     """
-    return list(
-        db.execute(
-            select(Security).where(
-                or_(Security.issuer_cik == filer.cik, Security.name.ilike(filer.name))
-            )
-        ).scalars()
-    )
+    return conn.execute(
+        "SELECT * FROM security WHERE issuer_cik = %s OR name ILIKE %s",
+        (filer["cik"], filer["name"]),
+    ).fetchall()
 
 
 @router.get("/{cik}/issuer-activity", response_model=IssuerActivityOut)
 def filer_issuer_activity(
     cik: str,
     limit: int = Query(100, le=500),
-    db: Session = Depends(get_session),
+    conn: psycopg.Connection = Depends(get_connection),
 ) -> IssuerActivityOut:
     """The 'company' side: insider trades, activist stakes, and institutional
     holders of this entity's *own* securities."""
-    filer = _resolve_filer(db, cik)
-    securities = _issuer_securities(db, filer)
+    filer = _resolve_filer(conn, cik)
+    securities = _issuer_securities(conn, filer)
     if not securities:
         return IssuerActivityOut(securities=[], insider_txns=[], stakes_in=[], top_holders=[])
 
-    sec_ids = [s.id for s in securities]
+    sec_ids = [s["id"] for s in securities]
 
-    insider_rows = list(
-        db.execute(
-            select(InsiderTxn)
-            .where(InsiderTxn.security_id.in_(sec_ids))
-            .order_by(InsiderTxn.txn_date.desc().nullslast())
-            .limit(limit)
-        ).scalars()
-    )
+    insider_rows = conn.execute(
+        f"""SELECT it.insider_name, it.insider_title, it.is_director, it.is_officer,
+                   it.is_ten_pct_owner, it.txn_date, it.txn_code, it.is_derivative,
+                   it.shares, it.price, it.acquired_disposed, {SECURITY_COLS}
+              FROM insider_txn it
+              JOIN security s ON it.security_id = s.id
+             WHERE it.security_id = ANY(%s)
+             ORDER BY it.txn_date DESC NULLS LAST
+             LIMIT %s""",
+        (sec_ids, limit),
+    ).fetchall()
     insider_txns = [
         InsiderTxnOut(
-            security=SecurityOut.model_validate(t.security),
-            insider_name=t.insider_name,
-            insider_title=t.insider_title,
-            is_director=t.is_director,
-            is_officer=t.is_officer,
-            is_ten_pct_owner=t.is_ten_pct_owner,
-            txn_date=t.txn_date,
-            txn_code=t.txn_code,
-            is_derivative=t.is_derivative,
-            shares=float(t.shares) if t.shares is not None else None,
-            price=float(t.price) if t.price is not None else None,
-            acquired_disposed=t.acquired_disposed,
+            security=security_out(t),
+            insider_name=t["insider_name"],
+            insider_title=t["insider_title"],
+            is_director=t["is_director"],
+            is_officer=t["is_officer"],
+            is_ten_pct_owner=t["is_ten_pct_owner"],
+            txn_date=t["txn_date"],
+            txn_code=t["txn_code"],
+            is_derivative=t["is_derivative"],
+            shares=float(t["shares"]) if t["shares"] is not None else None,
+            price=float(t["price"]) if t["price"] is not None else None,
+            acquired_disposed=t["acquired_disposed"],
         )
         for t in insider_rows
     ]
 
-    stake_rows = db.execute(
-        select(OwnershipStake, Filing, Filer)
-        .join(Filing, OwnershipStake.filing_id == Filing.id)
-        .join(Filer, Filing.filer_id == Filer.id)
-        .where(OwnershipStake.security_id.in_(sec_ids))
-        .order_by(Filing.filed_at.desc())
-        .limit(limit)
-    ).all()
+    stake_rows = conn.execute(
+        f"""SELECT os.percent_of_class, os.shares, os.event_date, os.is_activist,
+                   fl.form_type, {SECURITY_COLS}, {FILER_COLS}
+              FROM ownership_stake os
+              JOIN filing fl ON os.filing_id = fl.id
+              JOIN filer fr ON fl.filer_id = fr.id
+              JOIN security s ON os.security_id = s.id
+             WHERE os.security_id = ANY(%s)
+             ORDER BY fl.filed_at DESC
+             LIMIT %s""",
+        (sec_ids, limit),
+    ).fetchall()
     stakes_in = [
         StakeOut(
-            filer=FilerOut.model_validate(holder),
-            security=SecurityOut.model_validate(stake.security),
-            form_type=filing.form_type,
-            percent_of_class=float(stake.percent_of_class) if stake.percent_of_class is not None else None,
-            shares=stake.shares,
-            event_date=stake.event_date,
-            is_activist=stake.is_activist,
+            filer=filer_out(r),
+            security=security_out(r),
+            form_type=r["form_type"],
+            percent_of_class=float(r["percent_of_class"])
+            if r["percent_of_class"] is not None
+            else None,
+            shares=r["shares"],
+            event_date=r["event_date"],
+            is_activist=r["is_activist"],
         )
-        for stake, filing, holder in stake_rows
+        for r in stake_rows
     ]
 
     # Top institutional holders: latest 13F position per filer for these securities.
-    holder_rows = db.execute(
-        select(Holding, Filing, Filer)
-        .join(Filing, Holding.filing_id == Filing.id)
-        .join(Filer, Filing.filer_id == Filer.id)
-        .where(Holding.security_id.in_(sec_ids))
-        .order_by(Filer.id, Filing.period_of_report.desc().nullslast())
-    ).all()
+    holder_rows = conn.execute(
+        f"""SELECT h.shares, h.value, fl.period_of_report, {FILER_COLS}
+              FROM holding h
+              JOIN filing fl ON h.filing_id = fl.id
+              JOIN filer fr ON fl.filer_id = fr.id
+             WHERE h.security_id = ANY(%s)
+             ORDER BY fr.id, fl.period_of_report DESC NULLS LAST""",
+        (sec_ids,),
+    ).fetchall()
     seen: set[int] = set()
     top_holders: list[HolderOut] = []
-    for holding, filing, holder in holder_rows:
-        if holder.id in seen:
+    for r in holder_rows:
+        if r["filer_id"] in seen:
             continue
-        seen.add(holder.id)
+        seen.add(r["filer_id"])
         top_holders.append(
             HolderOut(
-                filer=FilerOut.model_validate(holder),
-                shares=holding.shares,
-                value=holding.value,
-                period_of_report=filing.period_of_report,
+                filer=filer_out(r),
+                shares=r["shares"],
+                value=r["value"],
+                period_of_report=r["period_of_report"],
             )
         )
     top_holders.sort(key=lambda h: h.value, reverse=True)

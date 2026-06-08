@@ -12,7 +12,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import connect
 from app.edgar.feed import fetch_recent
 from app.edgar.indexes import fetch_recent_days
 from app.ingest.pipeline import ingest_filing
@@ -23,7 +23,7 @@ log = logging.getLogger("sechub.worker")
 
 def poll_feed() -> None:
     """Pull the latest filings for each watched form type and ingest new ones."""
-    db = SessionLocal()
+    conn = connect()
     new_count = 0
     try:
         for form in settings.watch_forms:
@@ -33,24 +33,24 @@ def poll_feed() -> None:
                 log.exception("feed poll failed for %s", form)
                 continue
             for ref in refs:
-                if ingest_filing(db, ref) is not None:
+                if ingest_filing(conn, ref) is not None:
                     new_count += 1
     finally:
-        db.close()
+        conn.close()
     log.info("feed poll complete: %d new filings", new_count)
 
 
 def nightly_backfill() -> None:
     """Backfill the last few days from the daily index to catch anything missed."""
-    db = SessionLocal()
+    conn = connect()
     new_count = 0
     try:
         refs = fetch_recent_days(set(settings.watch_forms), days=3)
         for ref in refs:
-            if ingest_filing(db, ref) is not None:
+            if ingest_filing(conn, ref) is not None:
                 new_count += 1
     finally:
-        db.close()
+        conn.close()
     log.info("nightly backfill complete: %d new filings", new_count)
 
 

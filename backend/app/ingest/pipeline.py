@@ -2,8 +2,8 @@
 
 ``ingest_filing`` is idempotent on accession number and dispatches to a
 per-form handler. Handlers fetch only the documents they need (via
-``edgar.locate``), parse them offline-style, and attach child rows to the
-``Filing``.
+``edgar.locate``), parse them offline-style, and insert child rows referencing
+the ``filing``.
 """
 
 from __future__ import annotations
@@ -11,8 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+import psycopg
 
 from app.edgar import header, locate
 from app.edgar.client import edgar_client
@@ -21,13 +20,6 @@ from app.edgar.feed import FilingRef
 from app.edgar.parsers import form13f, nport, ownership, schedule13dg
 from app.ingest.diff import compute_changes
 from app.ingest.resolve import get_or_create_filer, get_or_create_security
-from app.models import (
-    Filing,
-    FundHolding,
-    Holding,
-    InsiderTxn,
-    OwnershipStake,
-)
 
 log = logging.getLogger("sechub.ingest")
 
@@ -35,59 +27,56 @@ log = logging.getLogger("sechub.ingest")
 _DOLLARS_SINCE = date(2023, 1, 3)
 
 
-def already_ingested(db: Session, accession: str) -> bool:
+def already_ingested(conn: psycopg.Connection, accession: str) -> bool:
     return (
-        db.execute(select(Filing.id).where(Filing.accession_no == accession)).first()
+        conn.execute("SELECT 1 FROM filing WHERE accession_no = %s", (accession,)).fetchone()
         is not None
     )
 
 
-def ingest_filing(db: Session, ref: FilingRef) -> Filing | None:
-    """Fetch, parse, and persist one filing. Returns the Filing, or None if
+def ingest_filing(conn: psycopg.Connection, ref: FilingRef) -> dict | None:
+    """Fetch, parse, and persist one filing. Returns the filing row, or None if
     it was already ingested or its form type is unsupported."""
-    if already_ingested(db, ref.accession_no):
+    if already_ingested(conn, ref.accession_no):
         return None
 
     family = _family(ref.form_type)
     if family is None:
         return None
 
-    filer = get_or_create_filer(db, ref.cik, ref.filer_name, kind=_KIND[family])
-    filing = Filing(
-        accession_no=ref.accession_no,
-        filer_id=filer.id,
-        form_type=ref.form_type,
-        filed_at=ref.filed_at,
-        source_url=f"{filing_dir_url(ref.cik, ref.accession_no)}/"
-        f"{ref.accession_no}-index.htm",
-    )
-    db.add(filing)
-    db.flush()
+    filer = get_or_create_filer(conn, ref.cik, ref.filer_name, kind=_KIND[family])
+    source_url = f"{filing_dir_url(ref.cik, ref.accession_no)}/{ref.accession_no}-index.htm"
+    filing = conn.execute(
+        """INSERT INTO filing (accession_no, filer_id, form_type, filed_at, source_url)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (ref.accession_no, filer["id"], ref.form_type, ref.filed_at, source_url),
+    ).fetchone()
 
     try:
-        period = _HANDLERS[family](db, filing, ref)
+        period = _HANDLERS[family](conn, filing, ref)
     except Exception:  # one bad filing shouldn't poison the batch
         log.exception("failed to parse %s (%s)", ref.accession_no, ref.form_type)
-        db.rollback()
+        conn.rollback()
         return None
 
-    filing.period_of_report = period
-    filer.latest_filing_at = ref.filed_at
-    # Persist the period before diffing: the session is autoflush=False, so the
-    # change-detection query would otherwise not see this filing's period yet.
-    db.flush()
+    conn.execute("UPDATE filing SET period_of_report = %s WHERE id = %s", (period, filing["id"]))
+    conn.execute(
+        "UPDATE filer SET latest_filing_at = %s WHERE id = %s",
+        (ref.filed_at, filer["id"]),
+    )
     if family == "13F" and period:
-        compute_changes(db, filer.id, period)
+        compute_changes(conn, filer["id"], period)
 
-    db.commit()
-    log.info("ingested %s %s for %s", ref.form_type, ref.accession_no, filer.name)
+    conn.commit()
+    filing["period_of_report"] = period
+    log.info("ingested %s %s for %s", ref.form_type, ref.accession_no, filer["name"])
     return filing
 
 
-# --- per-form handlers: add child rows, return period_of_report ------------
+# --- per-form handlers: insert child rows, return period_of_report ----------
 
 
-def _handle_13f(db: Session, filing: Filing, ref: FilingRef) -> date | None:
+def _handle_13f(conn: psycopg.Connection, filing: dict, ref: FilingRef) -> date | None:
     primary = locate.find_primary_doc(ref.cik, ref.accession_no)
     period = form13f.parse_period(edgar_client.get_bytes(primary)) if primary else None
 
@@ -101,57 +90,64 @@ def _handle_13f(db: Session, filing: Filing, ref: FilingRef) -> date | None:
         value_in_thousands=in_thousands,
     )
     for h in parsed.holdings:
-        sec = get_or_create_security(db, h.security)
-        db.add(
-            Holding(
-                filing_id=filing.id,
-                security_id=sec.id,
-                value=h.value,
-                shares=h.shares,
-                sh_prn_type=h.sh_prn_type,
-                put_call=h.put_call,
-                investment_discretion=h.investment_discretion,
-                voting_sole=h.voting_sole,
-                voting_shared=h.voting_shared,
-                voting_none=h.voting_none,
-            )
+        sec = get_or_create_security(conn, h.security)
+        conn.execute(
+            """INSERT INTO holding
+               (filing_id, security_id, value, shares, sh_prn_type, put_call,
+                investment_discretion, voting_sole, voting_shared, voting_none)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                filing["id"],
+                sec["id"],
+                h.value,
+                h.shares,
+                h.sh_prn_type,
+                h.put_call,
+                h.investment_discretion,
+                h.voting_sole,
+                h.voting_shared,
+                h.voting_none,
+            ),
         )
-    db.flush()
     return parsed.period_of_report or period
 
 
-def _handle_ownership(db: Session, filing: Filing, ref: FilingRef) -> date | None:
+def _handle_ownership(conn: psycopg.Connection, filing: dict, ref: FilingRef) -> date | None:
     xml_url = locate.find_ownership_xml(ref.cik, ref.accession_no)
     if not xml_url:
         return None
     parsed = ownership.parse(edgar_client.get_bytes(xml_url))
     ticker = getattr(parsed, "issuer_ticker", None)
-    sec = get_or_create_security(db, parsed.issuer, ticker=ticker, issuer_cik=parsed.issuer_cik)
+    sec = get_or_create_security(conn, parsed.issuer, ticker=ticker, issuer_cik=parsed.issuer_cik)
     for t in parsed.transactions:
-        db.add(
-            InsiderTxn(
-                filing_id=filing.id,
-                security_id=sec.id,
-                insider_name=parsed.insider_name,
-                insider_title=parsed.insider_title,
-                is_director=parsed.is_director,
-                is_officer=parsed.is_officer,
-                is_ten_pct_owner=parsed.is_ten_pct_owner,
-                txn_date=t.txn_date,
-                txn_code=t.txn_code,
-                is_derivative=t.is_derivative,
-                security_title=t.security_title,
-                shares=t.shares,
-                price=t.price,
-                acquired_disposed=t.acquired_disposed,
-                shares_owned_after=t.shares_owned_after,
-            )
+        conn.execute(
+            """INSERT INTO insider_txn
+               (filing_id, security_id, insider_name, insider_title, is_director,
+                is_officer, is_ten_pct_owner, txn_date, txn_code, is_derivative,
+                security_title, shares, price, acquired_disposed, shares_owned_after)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                filing["id"],
+                sec["id"],
+                parsed.insider_name,
+                parsed.insider_title,
+                parsed.is_director,
+                parsed.is_officer,
+                parsed.is_ten_pct_owner,
+                t.txn_date,
+                t.txn_code,
+                t.is_derivative,
+                t.security_title,
+                t.shares,
+                t.price,
+                t.acquired_disposed,
+                t.shares_owned_after,
+            ),
         )
-    db.flush()
     return parsed.period_of_report
 
 
-def _handle_stake(db: Session, filing: Filing, ref: FilingRef) -> date | None:
+def _handle_stake(conn: psycopg.Connection, filing: dict, ref: FilingRef) -> date | None:
     html_url = locate.find_primary_html(ref.cik, ref.accession_no)
     if not html_url:
         return None
@@ -163,38 +159,36 @@ def _handle_stake(db: Session, filing: Filing, ref: FilingRef) -> date | None:
     # The cover page has no issuer CIK; recover it from the filing's SGML header
     # so the stake joins to its issuer exactly (falls back to CUSIP/name).
     subject_cik = header.fetch_subject_cik(ref.cik, ref.accession_no)
-    sec = get_or_create_security(db, parsed.issuer, issuer_cik=subject_cik)
-    db.add(
-        OwnershipStake(
-            filing_id=filing.id,
-            security_id=sec.id,
-            percent_of_class=parsed.percent_of_class,
-            shares=parsed.shares,
-            event_date=parsed.event_date,
-            is_activist=parsed.is_activist,
-        )
+    sec = get_or_create_security(conn, parsed.issuer, issuer_cik=subject_cik)
+    conn.execute(
+        """INSERT INTO ownership_stake
+           (filing_id, security_id, percent_of_class, shares, event_date, is_activist)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (
+            filing["id"],
+            sec["id"],
+            parsed.percent_of_class,
+            parsed.shares,
+            parsed.event_date,
+            parsed.is_activist,
+        ),
     )
-    db.flush()
     return parsed.event_date
 
 
-def _handle_nport(db: Session, filing: Filing, ref: FilingRef) -> date | None:
+def _handle_nport(conn: psycopg.Connection, filing: dict, ref: FilingRef) -> date | None:
     primary = locate.find_primary_doc(ref.cik, ref.accession_no)
     if not primary:
         return None
     parsed = nport.parse(edgar_client.get_bytes(primary))
     for h in parsed.holdings:
-        sec = get_or_create_security(db, h.security)
-        db.add(
-            FundHolding(
-                filing_id=filing.id,
-                security_id=sec.id,
-                value=h.value,
-                balance=h.balance,
-                pct_of_net_assets=h.pct_of_net_assets,
-            )
+        sec = get_or_create_security(conn, h.security)
+        conn.execute(
+            """INSERT INTO fund_holding
+               (filing_id, security_id, value, balance, pct_of_net_assets)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (filing["id"], sec["id"], h.value, h.balance, h.pct_of_net_assets),
         )
-    db.flush()
     return parsed.period_of_report
 
 

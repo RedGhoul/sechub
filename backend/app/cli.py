@@ -18,7 +18,7 @@ import logging
 
 from app.backfill import run_backfill
 from app.config import settings
-from app.db import SessionLocal
+from app.db import connect
 from app.edgar.feed import fetch_filer_history
 from app.edgar.indexes import fetch_recent_days
 from app.ingest.pipeline import ingest_filing
@@ -28,31 +28,31 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 def _ingest_filer(args: argparse.Namespace) -> None:
     wanted = {f.strip() for f in args.forms.split(",") if f.strip()}
-    db = SessionLocal()
+    conn = connect()
     count = 0
     try:
         refs = fetch_filer_history(args.cik, forms=wanted)[: args.limit]
         print(f"found {len(refs)} matching filings for CIK {args.cik}")
         for ref in refs:
-            if ingest_filing(db, ref) is not None:
+            if ingest_filing(conn, ref) is not None:
                 count += 1
     finally:
-        db.close()
+        conn.close()
     print(f"ingested {count} new filings")
 
 
 def _backfill(args: argparse.Namespace) -> None:
     forms = {f.strip() for f in args.forms.split(",") if f.strip()} or set(settings.watch_forms)
-    db = SessionLocal()
+    conn = connect()
     count = 0
     try:
         refs = fetch_recent_days(forms, days=args.days)
         print(f"found {len(refs)} filings across last {args.days} day(s)")
         for ref in refs:
-            if ingest_filing(db, ref) is not None:
+            if ingest_filing(conn, ref) is not None:
                 count += 1
     finally:
-        db.close()
+        conn.close()
     print(f"ingested {count} new filings")
 
 

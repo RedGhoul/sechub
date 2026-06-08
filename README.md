@@ -18,7 +18,7 @@ options (puts/calls)* — plus quarter-over-quarter portfolio changes.
 
 > **Note on values:** SEC reports 13F values *as of quarter-end*. SecHub shows
 > these as-filed values. A live price feed (for true *current* value) is a
-> documented future extension — see `backend/app/models/security.py`.
+> documented future extension — the `security.ticker` column is the hook for it.
 
 ## Architecture
 
@@ -84,6 +84,7 @@ Then open the frontend and explore the live feed and filer portfolios.
 cd backend
 uv sync                      # or: pip install -e ".[dev]"
 uv run pytest                # parser tests run offline against sample filings
+uv run python -m app.migrate # apply raw-SQL migrations (needs Postgres running)
 uv run uvicorn app.main:app --reload
 
 cd ../frontend
