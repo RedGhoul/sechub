@@ -1,26 +1,48 @@
-"""SQLAlchemy engine, session factory, and declarative base."""
+"""Raw psycopg connection helpers.
+
+The whole app talks to Postgres through plain SQL over psycopg3 connections —
+there's no ORM. Queries return ``dict`` rows (``row_factory=dict_row``) and
+writes use ``INSERT ... RETURNING`` for generated ids. Schema changes live as
+raw ``.sql`` files under ``migrations/`` and are applied by ``app.migrate``.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+import psycopg
+from psycopg.rows import dict_row
 
 from app.config import settings
 
-engine = create_engine(settings.database_url, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+
+def dsn() -> str:
+    """The libpq DSN for the configured database.
+
+    ``DATABASE_URL`` keeps the SQLAlchemy-style ``postgresql+psycopg://`` form
+    for backwards compatibility; libpq/psycopg wants a plain ``postgresql://``
+    URL, so strip any ``+driver`` suffix from the scheme.
+    """
+    url = settings.database_url
+    scheme, sep, rest = url.partition("://")
+    if sep and "+" in scheme:
+        scheme = scheme.split("+", 1)[0]
+    return f"{scheme}{sep}{rest}"
 
 
-class Base(DeclarativeBase):
-    pass
+def connect() -> psycopg.Connection:
+    """Open a new connection with dict rows. The caller owns its lifecycle."""
+    return psycopg.connect(dsn(), row_factory=dict_row)
 
 
-def get_session() -> Iterator[Session]:
-    """FastAPI dependency that yields a request-scoped session."""
-    db = SessionLocal()
+def get_connection() -> Iterator[psycopg.Connection]:
+    """FastAPI dependency that yields a request-scoped connection.
+
+    Read endpoints never commit; psycopg rolls back the (empty) transaction
+    when the connection closes.
+    """
+    conn = connect()
     try:
-        yield db
+        yield conn
     finally:
-        db.close()
+        conn.close()

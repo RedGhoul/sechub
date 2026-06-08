@@ -41,6 +41,12 @@ structured data, and serves it through a REST API and a Next.js web UI.
 `key` (CUSIP > `TICKER:<sym>` > `CIK:<cik>`). `holding_change` is the derived
 quarter-over-quarter diff.
 
+There is **no ORM**: the app talks to Postgres with plain SQL over psycopg
+(`backend/app/db.py`), and the schema is versioned as raw `.sql` files under
+`backend/migrations/`. `python -m app.migrate` applies any not yet recorded in
+the `schema_migrations` table (one transaction per file) and stamps each with
+its filename and an `applied_at` timestamp; re-running only applies what's new.
+
 ## Form-specific notes & limitations
 
 - **13F value normalization.** Pre-2023-amendment filings report `value` in
@@ -128,7 +134,8 @@ halves both disk and backfill time. For a 100 GB+ dataset, give Postgres
 ## Extending to a new form type
 
 1. Add a parser in `edgar/parsers/` returning a DTO from raw bytes.
-2. Add a child model + Alembic migration if needed.
+2. Add a numbered `.sql` migration under `backend/migrations/` for any new
+   table/column (applied by `python -m app.migrate`).
 3. Add a handler in `pipeline.py` and register it in `_HANDLERS` / `_family`.
 4. Add the form to `SECHUB_WATCH_FORMS`.
 5. Add a sample fixture + parser test.

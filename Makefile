@@ -12,7 +12,7 @@ logs:
 
 # --- Backend (inside the api container) ---
 migrate:       ## apply DB migrations
-	docker compose exec api alembic upgrade head
+	docker compose exec api python -m app.migrate
 
 # Ingest one filer's recent filings:  make ingest CIK=0001067983 FORMS=13F-HR
 ingest:
