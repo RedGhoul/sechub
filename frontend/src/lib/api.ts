@@ -24,6 +24,10 @@ export interface Holding {
   shares: number;
   sh_prn_type: string;
   put_call: string | null;
+  investment_discretion: string | null;
+  voting_sole: number;
+  voting_shared: number;
+  voting_none: number;
   pct_of_portfolio: number | null;
 }
 
@@ -93,9 +97,11 @@ export interface InsiderTxn {
   txn_date: string | null;
   txn_code: string | null;
   is_derivative: boolean;
+  security_title: string | null;
   shares: number | null;
   price: number | null;
   acquired_disposed: string | null;
+  shares_owned_after: number | null;
 }
 
 export interface Holder {
@@ -132,6 +138,9 @@ export const api = {
   issuerActivity: (cik: string) => get<IssuerActivity>(`/filers/${cik}/issuer-activity`),
   feed: (form = "", limit = 50) =>
     get<Filing[]>(`/filings?limit=${limit}${form ? `&form=${encodeURIComponent(form)}` : ""}`),
+  filing: (id: number) => get<Filing>(`/filings/${id}`),
+  security: (cusip: string) => get<Security>(`/securities/${cusip}`),
+  securityHolders: (cusip: string) => get<Holder[]>(`/securities/${cusip}/holders`),
 };
 
 // --- formatting helpers ---

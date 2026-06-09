@@ -10,8 +10,9 @@ import {
   FundHolding,
   Stake,
   IssuerActivity,
+  Security,
 } from "@/lib/api";
-import { ActionPill, FormPill } from "@/components/ActionPill";
+import { ActionPill, FormPill, RolePill } from "@/components/ActionPill";
 
 export default async function FilerPage({
   params,
@@ -140,6 +141,10 @@ export default async function FilerPage({
                   <th className="th text-right">Shares</th>
                   <th className="th text-right">Value</th>
                   <th className="th text-right">% Port.</th>
+                  <th className="th" title="Sole / Shared / None voting authority">
+                    Voting (S/Sh/N)
+                  </th>
+                  <th className="th">Disc.</th>
                   <th className="th">Type</th>
                 </tr>
               </thead>
@@ -149,10 +154,10 @@ export default async function FilerPage({
                     <td className="td">
                       {h.security.cusip ? (
                         <Link href={`/security/${h.security.cusip}`} className="hover:text-accent">
-                          {h.security.name}
+                          <SecurityName security={h.security} />
                         </Link>
                       ) : (
-                        h.security.name
+                        <SecurityName security={h.security} />
                       )}
                     </td>
                     <td className="td text-right">{fmtShares(h.shares)}</td>
@@ -160,6 +165,11 @@ export default async function FilerPage({
                     <td className="td text-right text-muted">
                       {h.pct_of_portfolio?.toFixed(2) ?? "—"}%
                     </td>
+                    <td className="td text-muted text-xs whitespace-nowrap">
+                      {fmtShares(h.voting_sole)} / {fmtShares(h.voting_shared)} /{" "}
+                      {fmtShares(h.voting_none)}
+                    </td>
+                    <td className="td text-muted text-xs">{h.investment_discretion ?? "—"}</td>
                     <td className="td">
                       {h.put_call ? (
                         <span className="pill bg-amber-500/15 text-amber-400">{h.put_call}</span>
@@ -191,7 +201,7 @@ export default async function FilerPage({
               <tbody>
                 {funds.map((h, i) => (
                   <tr key={i}>
-                    <td className="td">{h.security.name}</td>
+                    <td className="td"><SecurityName security={h.security} /></td>
                     <td className="td text-right">{h.balance == null ? "—" : fmtShares(h.balance)}</td>
                     <td className="td text-right">{fmtUSD(h.value)}</td>
                     <td className="td text-right text-muted">
@@ -223,7 +233,7 @@ export default async function FilerPage({
               <tbody>
                 {stakesHeld.map((s, i) => (
                   <tr key={i}>
-                    <td className="td">{s.security.name}</td>
+                    <td className="td"><SecurityName security={s.security} /></td>
                     <td className="td">
                       <FormPill form={s.form_type} />
                       {s.is_activist && (
@@ -253,8 +263,10 @@ export default async function FilerPage({
                 <tr>
                   <th className="th">Date</th>
                   <th className="th">Insider</th>
+                  <th className="th">Security</th>
                   <th className="th">Code</th>
                   <th className="th text-right">Shares</th>
+                  <th className="th text-right">Owned after</th>
                   <th className="th text-right">Price</th>
                   <th className="th">A/D</th>
                 </tr>
@@ -264,13 +276,27 @@ export default async function FilerPage({
                   <tr key={i}>
                     <td className="td text-muted">{t.txn_date ?? "—"}</td>
                     <td className="td">
-                      {t.insider_name}
-                      {t.insider_title && (
-                        <span className="text-muted text-xs ml-1">({t.insider_title})</span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span>{t.insider_name}</span>
+                        {t.insider_title && (
+                          <span className="text-muted text-xs">({t.insider_title})</span>
+                        )}
+                        {t.is_director && <RolePill label="Dir" />}
+                        {t.is_officer && <RolePill label="Officer" />}
+                        {t.is_ten_pct_owner && <RolePill label="10%" />}
+                      </div>
+                    </td>
+                    <td className="td text-muted text-xs">{t.security_title ?? "—"}</td>
+                    <td className="td">
+                      <span>{t.txn_code ?? "—"}</span>
+                      {t.is_derivative && (
+                        <span className="pill bg-edge text-muted ml-1">deriv</span>
                       )}
                     </td>
-                    <td className="td">{t.txn_code ?? "—"}</td>
                     <td className="td text-right">{t.shares == null ? "—" : fmtShares(t.shares)}</td>
+                    <td className="td text-right text-muted">
+                      {t.shares_owned_after == null ? "—" : fmtShares(t.shares_owned_after)}
+                    </td>
                     <td className="td text-right">{t.price == null ? "—" : `$${t.price.toFixed(2)}`}</td>
                     <td className={`td ${t.acquired_disposed === "A" ? "text-pos" : t.acquired_disposed === "D" ? "text-neg" : "text-muted"}`}>
                       {t.acquired_disposed ?? "—"}
@@ -387,6 +413,17 @@ function PeriodSelector({
         })}
       </div>
     </div>
+  );
+}
+
+function SecurityName({ security }: { security: Security }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {security.name}
+      {security.ticker && (
+        <span className="pill bg-edge text-muted font-mono text-xs">{security.ticker}</span>
+      )}
+    </span>
   );
 }
 

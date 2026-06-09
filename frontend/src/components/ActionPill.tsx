@@ -24,3 +24,7 @@ export function FormPill({ form }: { form: string }) {
     (key === "13D" ? "bg-fuchsia-500/15 text-fuchsia-400" : "bg-edge text-muted");
   return <span className={`pill ${style}`}>{form}</span>;
 }
+
+export function RolePill({ label }: { label: string }) {
+  return <span className="pill bg-edge text-muted">{label}</span>;
+}

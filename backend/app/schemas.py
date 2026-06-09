@@ -30,6 +30,10 @@ class HoldingOut(BaseModel):
     shares: int
     sh_prn_type: str
     put_call: str | None
+    investment_discretion: str | None = None
+    voting_sole: int = 0
+    voting_shared: int = 0
+    voting_none: int = 0
     pct_of_portfolio: float | None = None
 
 
@@ -111,9 +115,11 @@ class InsiderTxnOut(BaseModel):
     txn_date: date | None
     txn_code: str | None
     is_derivative: bool
+    security_title: str | None
     shares: float | None
     price: float | None
     acquired_disposed: str | None
+    shares_owned_after: float | None
 
 
 class IssuerActivityOut(BaseModel):

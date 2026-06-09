@@ -1,24 +1,18 @@
 import Link from "next/link";
-import { API_BASE, fmtUSD, fmtShares, Filer } from "@/lib/api";
-
-interface Holder {
-  filer: Filer;
-  shares: number;
-  value: number;
-  period_of_report: string | null;
-}
+import { api, fmtUSD, fmtShares, Holder, Security } from "@/lib/api";
 
 export default async function SecurityPage({ params }: { params: { cusip: string } }) {
+  let security: Security | null = null;
   let holders: Holder[] = [];
-  let err: string | null = null;
   try {
-    const res = await fetch(`${API_BASE}/securities/${params.cusip}/holders`, {
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`${res.status}`);
-    holders = await res.json();
-  } catch (e) {
-    err = String(e);
+    security = await api.security(params.cusip);
+  } catch {
+    security = null;
+  }
+  try {
+    holders = await api.securityHolders(params.cusip);
+  } catch {
+    holders = [];
   }
 
   return (
@@ -26,11 +20,19 @@ export default async function SecurityPage({ params }: { params: { cusip: string
       <Link href="/" className="text-accent text-sm">
         ← back
       </Link>
-      <h1 className="text-2xl font-bold">
-        Holders of <span className="font-mono text-accent">{params.cusip}</span>
-      </h1>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="text-2xl font-bold">
+          {security ? security.name : "Holders"}
+        </h1>
+        {security?.ticker && (
+          <span className="pill bg-edge text-muted font-mono">{security.ticker}</span>
+        )}
+        <span className="font-mono text-sm text-accent">{params.cusip}</span>
+      </div>
 
-      {err && <p className="text-muted text-sm">No holders found for this CUSIP yet.</p>}
+      {holders.length === 0 && (
+        <p className="text-muted text-sm">No holders found for this CUSIP yet.</p>
+      )}
 
       {holders.length > 0 && (
         <div className="card overflow-x-auto">
