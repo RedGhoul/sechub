@@ -36,38 +36,54 @@ def already_ingested(conn: psycopg.Connection, accession: str) -> bool:
 
 def ingest_filing(conn: psycopg.Connection, ref: FilingRef) -> dict | None:
     """Fetch, parse, and persist one filing. Returns the filing row, or None if
-    it was already ingested or its form type is unsupported."""
+    it was already ingested or its form type is unsupported.
+
+    The whole write path is wrapped so that a single bad (or racing) filing can
+    never leave the connection in an aborted-transaction state — the worker and
+    the historical backfill reuse one connection across many filings, so an
+    unrolled-back failure would poison every filing that follows it.
+    """
     if already_ingested(conn, ref.accession_no):
+        conn.rollback()  # close the implicit read txn so it can't linger
         return None
 
     family = _family(ref.form_type)
     if family is None:
-        return None
-
-    filer = get_or_create_filer(conn, ref.cik, ref.filer_name, kind=_KIND[family])
-    source_url = f"{filing_dir_url(ref.cik, ref.accession_no)}/{ref.accession_no}-index.htm"
-    filing = conn.execute(
-        """INSERT INTO filing (accession_no, filer_id, form_type, filed_at, source_url)
-           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
-        (ref.accession_no, filer["id"], ref.form_type, ref.filed_at, source_url),
-    ).fetchone()
-
-    try:
-        period = _HANDLERS[family](conn, filing, ref)
-    except Exception:  # one bad filing shouldn't poison the batch
-        log.exception("failed to parse %s (%s)", ref.accession_no, ref.form_type)
         conn.rollback()
         return None
 
-    conn.execute("UPDATE filing SET period_of_report = %s WHERE id = %s", (period, filing["id"]))
-    conn.execute(
-        "UPDATE filer SET latest_filing_at = %s WHERE id = %s",
-        (ref.filed_at, filer["id"]),
-    )
-    if family == "13F" and period:
-        compute_changes(conn, filer["id"], period)
+    try:
+        filer = get_or_create_filer(conn, ref.cik, ref.filer_name, kind=_KIND[family])
+        source_url = f"{filing_dir_url(ref.cik, ref.accession_no)}/{ref.accession_no}-index.htm"
+        filing = conn.execute(
+            """INSERT INTO filing (accession_no, filer_id, form_type, filed_at, source_url)
+               VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+            (ref.accession_no, filer["id"], ref.form_type, ref.filed_at, source_url),
+        ).fetchone()
 
-    conn.commit()
+        period = _HANDLERS[family](conn, filing, ref)
+
+        conn.execute(
+            "UPDATE filing SET period_of_report = %s WHERE id = %s", (period, filing["id"])
+        )
+        conn.execute(
+            "UPDATE filer SET latest_filing_at = %s WHERE id = %s",
+            (ref.filed_at, filer["id"]),
+        )
+        if family == "13F" and period:
+            compute_changes(conn, filer["id"], period)
+
+        conn.commit()
+    except psycopg.errors.UniqueViolation:
+        # Another worker/thread ingested this accession between our
+        # already_ingested() check and the INSERT — treat it as already done.
+        conn.rollback()
+        return None
+    except Exception:  # one bad filing shouldn't poison the batch
+        log.exception("failed to ingest %s (%s)", ref.accession_no, ref.form_type)
+        conn.rollback()
+        return None
+
     filing["period_of_report"] = period
     log.info("ingested %s %s for %s", ref.form_type, ref.accession_no, filer["name"])
     return filing

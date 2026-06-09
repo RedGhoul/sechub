@@ -19,9 +19,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://sechub:sechub@db:5432/sechub"
 
-    # Real-time feed poll interval (seconds) and nightly backfill cron.
+    # Real-time feed poll interval (seconds) and the UTC hour (0-23) at which
+    # the worker runs its once-a-day daily-index catch-up backfill.
     sechub_poll_interval: int = 120
-    sechub_backfill_cron: str = "0 5 * * *"
+    sechub_backfill_hour: int = 5
 
     # Hard cap on requests/sec to EDGAR. SEC limit is 10; default lower for safety.
     sechub_max_rps: float = 8.0

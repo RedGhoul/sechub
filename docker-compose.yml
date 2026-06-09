@@ -33,12 +33,13 @@ services:
   worker:
     build: ./backend
     command: python -m app.worker
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://sechub:sechub@db:5432/sechub
       SECHUB_USER_AGENT: ${SECHUB_USER_AGENT:-SecHub/0.1 (you@example.com)}
       SECHUB_MAX_RPS: ${SECHUB_MAX_RPS:-8}
       SECHUB_POLL_INTERVAL: ${SECHUB_POLL_INTERVAL:-120}
-      SECHUB_BACKFILL_CRON: ${SECHUB_BACKFILL_CRON:-0 5 * * *}
+      SECHUB_BACKFILL_HOUR: ${SECHUB_BACKFILL_HOUR:-5}
       SECHUB_WATCH_FORMS: ${SECHUB_WATCH_FORMS:-13F-HR,4,SC 13D,SC 13G,NPORT-P}
     depends_on:
       db:
