@@ -69,6 +69,12 @@ export function LiveFeed() {
               {f.filer.name}
             </Link>
             <span className="text-xs text-muted whitespace-nowrap">{f.filed_at}</span>
+            <Link
+              href={`/filing/${f.id}`}
+              className="text-xs text-muted hover:text-accent whitespace-nowrap"
+            >
+              details
+            </Link>
             <a
               href={f.source_url}
               target="_blank"

@@ -115,7 +115,9 @@ def filer_detail(
     holdings: list[dict] = []
     if target_period is not None:
         holdings = conn.execute(
-            f"""SELECT h.value, h.shares, h.sh_prn_type, h.put_call, {SECURITY_COLS}
+            f"""SELECT h.value, h.shares, h.sh_prn_type, h.put_call,
+                       h.investment_discretion, h.voting_sole, h.voting_shared,
+                       h.voting_none, {SECURITY_COLS}
                   FROM holding h
                   JOIN filing f ON h.filing_id = f.id
                   JOIN security s ON h.security_id = s.id
@@ -132,6 +134,10 @@ def filer_detail(
             shares=h["shares"],
             sh_prn_type=h["sh_prn_type"],
             put_call=h["put_call"],
+            investment_discretion=h["investment_discretion"],
+            voting_sole=h["voting_sole"],
+            voting_shared=h["voting_shared"],
+            voting_none=h["voting_none"],
             pct_of_portfolio=round(h["value"] / total_value * 100, 2) if total_value else None,
         )
         for h in holdings
@@ -312,7 +318,8 @@ def filer_issuer_activity(
     insider_rows = conn.execute(
         f"""SELECT it.insider_name, it.insider_title, it.is_director, it.is_officer,
                    it.is_ten_pct_owner, it.txn_date, it.txn_code, it.is_derivative,
-                   it.shares, it.price, it.acquired_disposed, {SECURITY_COLS}
+                   it.security_title, it.shares, it.price, it.acquired_disposed,
+                   it.shares_owned_after, {SECURITY_COLS}
               FROM insider_txn it
               JOIN security s ON it.security_id = s.id
              WHERE it.security_id = ANY(%s)
@@ -331,9 +338,13 @@ def filer_issuer_activity(
             txn_date=t["txn_date"],
             txn_code=t["txn_code"],
             is_derivative=t["is_derivative"],
+            security_title=t["security_title"],
             shares=float(t["shares"]) if t["shares"] is not None else None,
             price=float(t["price"]) if t["price"] is not None else None,
             acquired_disposed=t["acquired_disposed"],
+            shares_owned_after=float(t["shares_owned_after"])
+            if t["shares_owned_after"] is not None
+            else None,
         )
         for t in insider_rows
     ]

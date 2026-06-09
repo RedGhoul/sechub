@@ -128,6 +128,20 @@ describe("api client", () => {
     expect(calledUrl()).toBe(`${API_BASE}/filings?limit=10&form=SC%2013D`);
   });
 
+  it("builds the filing detail path from a numeric id", async () => {
+    await api.filing(5);
+    expect(calledUrl()).toBe(`${API_BASE}/filings/5`);
+  });
+
+  it("builds the security detail and holders paths", async () => {
+    await api.security("037833100");
+    expect(calledUrl()).toBe(`${API_BASE}/securities/037833100`);
+
+    fetchMock.mockClear();
+    await api.securityHolders("037833100");
+    expect(calledUrl()).toBe(`${API_BASE}/securities/037833100/holders`);
+  });
+
   it("sends requests with no-store caching", async () => {
     await api.periods("0001067983");
     expect(fetchMock).toHaveBeenCalledWith(

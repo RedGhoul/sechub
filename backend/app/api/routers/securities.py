@@ -7,9 +7,21 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.serialize import FILER_COLS, filer_out
 from app.db import get_connection
-from app.schemas import HolderOut
+from app.schemas import HolderOut, SecurityOut
 
 router = APIRouter(prefix="/securities", tags=["securities"])
+
+
+@router.get("/{cusip}", response_model=SecurityOut)
+def security_detail(cusip: str, conn: psycopg.Connection = Depends(get_connection)) -> SecurityOut:
+    """The security record (name, ticker) for a CUSIP."""
+    row = conn.execute(
+        "SELECT id, cusip, name, ticker FROM security WHERE cusip = %s",
+        (cusip.upper(),),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "security not found")
+    return SecurityOut.model_validate(row)
 
 
 @router.get("/{cusip}/holders", response_model=list[HolderOut])
