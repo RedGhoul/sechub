@@ -15,7 +15,7 @@ structured data, and serves it through a REST API and a Next.js web UI.
 | Pipeline | `backend/app/ingest/pipeline.py` | `FilingRef` → fetch → parse → upsert → diff. Idempotent on accession number. |
 | Diff | `backend/app/ingest/diff.py` | Quarter-over-quarter 13F deltas (NEW/ADD/TRIM/EXIT). |
 | API | `backend/app/api/routers/` | FastAPI: filers (search, historical 13F by period, periods list, fund holdings, stakes held, issuer-side activity), filings feed, securities. |
-| Worker | `backend/app/worker.py` | APScheduler: poll feed + nightly backfill. |
+| Worker | `backend/app/worker.py` | Continuous loop (no scheduler framework): polls the feed each interval + a once-a-day daily-index catch-up. Traps SIGINT/SIGTERM for clean container shutdown. |
 | Frontend | `frontend/` | Next.js App Router; live feed, filer portfolios, holders. |
 
 ## EDGAR endpoints used

@@ -26,7 +26,7 @@ options (puts/calls)* — plus quarter-over-quarter portfolio changes.
 EDGAR (data.sec.gov + www.sec.gov)
         │  rate-limited 10 rps, descriptive User-Agent
         ▼
-  worker (APScheduler)            backend/app/worker.py
+  worker (continuous loop)        backend/app/worker.py
    ├─ real-time feed poll   ─┐
    └─ nightly index backfill ┘─► ingest pipeline ─► PostgreSQL
                                  (fetch→parse→upsert→diff)
