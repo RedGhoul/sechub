@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import httpx
+
 from app.edgar.client import edgar_client
 from app.edgar.common import ARCHIVES
 from app.edgar.feed import FilingRef
@@ -28,11 +30,16 @@ def fetch_quarter(year: int, quarter: int, forms: set[str]) -> list[FilingRef]:
 
     Returns an empty list for quarters with no published index (e.g. a future
     quarter), so callers can iterate a range without special-casing the edges.
+    A transient failure (network/5xx surviving the client's retries) is *not*
+    swallowed — it propagates so the backfill leaves the quarter incomplete and
+    retries it, rather than recording it as an empty, completed segment.
     """
     try:
         text = edgar_client.get_text(full_index_url(year, quarter))
-    except Exception:
-        return []
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return []
+        raise
     # The quarterly index carries a per-row Date Filed column we trust; the
     # quarter's first day is only a fallback for malformed rows.
     return parse_form_index(text, forms, default_date=date(year, (quarter - 1) * 3 + 1, 1))

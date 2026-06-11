@@ -32,9 +32,7 @@ def test_13f_information_table_dollars():
 
 def test_13f_value_in_thousands_normalization():
     """Pre-2023 filings report value in thousands; we scale to whole dollars."""
-    parsed = form13f.parse_information_table(
-        load("form13f_infotable.xml"), value_in_thousands=True
-    )
+    parsed = form13f.parse_information_table(load("form13f_infotable.xml"), value_in_thousands=True)
     assert parsed.holdings[0].value == 50_000_000 * 1000
 
 
@@ -64,6 +62,23 @@ def test_nport():
     assert msft.security.cusip == "594918104"
     assert msft.value == 123_456_789
     assert float(msft.pct_of_net_assets) == 5.25
+
+
+def test_nport_prefers_rep_pd_date_over_rep_pd_end():
+    """repPdDate wins even though repPdEnd appears first in document order
+    (as it does in real genInfo blocks) — the streaming parser must not just
+    take the first period-ish element it sees."""
+    xml = b"""<?xml version="1.0"?>
+    <edgarSubmission xmlns="http://www.sec.gov/edgar/nport">
+      <formData>
+        <genInfo>
+          <repPdEnd>2024-06-30</repPdEnd>
+          <repPdDate>2024-03-31</repPdDate>
+        </genInfo>
+        <invstOrSecs/>
+      </formData>
+    </edgarSubmission>"""
+    assert nport.parse(xml).period_of_report == date(2024, 3, 31)
 
 
 def test_sc13d_best_effort():

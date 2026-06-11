@@ -22,11 +22,16 @@ export function LiveFeed() {
 
   useEffect(() => {
     let active = true;
-    const load = () =>
+    // Sequence guard: only the most recently issued request's response is
+    // applied, so an overlapping slow poll can't revert the feed when it lands.
+    let seq = 0;
+    const load = () => {
+      const mine = ++seq;
       api
         .feed(form, 40)
-        .then((f) => active && (setFilings(f), setError(null)))
-        .catch((e) => active && setError(String(e)));
+        .then((f) => active && mine === seq && (setFilings(f), setError(null)))
+        .catch((e) => active && mine === seq && setError(String(e)));
+    };
     load();
     // Poll so new filings surface "as soon as they come out".
     const t = setInterval(load, 30_000);

@@ -17,8 +17,15 @@ def get_or_create_filer(
 ) -> dict:
     filer = conn.execute("SELECT * FROM filer WHERE cik = %s", (cik,)).fetchone()
     if filer is None:
+        # ON CONFLICT makes a concurrent insert of the same CIK idempotent rather
+        # than raising: the worker loop and the on-demand /filings/ingest task can
+        # race between this SELECT miss and the INSERT. NULLIF keeps the racing
+        # row's name when ours is just the cik fallback.
         return conn.execute(
-            "INSERT INTO filer (cik, name, kind) VALUES (%s, %s, %s) RETURNING *",
+            """INSERT INTO filer (cik, name, kind) VALUES (%s, %s, %s)
+               ON CONFLICT (cik) DO UPDATE
+               SET name = COALESCE(NULLIF(EXCLUDED.name, EXCLUDED.cik), filer.name)
+               RETURNING *""",
             (cik, name or cik, kind),
         ).fetchone()
     if name and filer["name"] != name:
@@ -49,9 +56,15 @@ def get_or_create_security(
     key = _security_key(ref, ticker, issuer_cik)
     sec = conn.execute("SELECT * FROM security WHERE key = %s", (key,)).fetchone()
     if sec is None:
+        # ON CONFLICT keeps a concurrent first-insert of the same key from raising
+        # (two ingest paths can resolve the same security at once). NULLIF keeps
+        # the racing row's name when ours is just the key fallback.
         return conn.execute(
             """INSERT INTO security (key, cusip, name, ticker, issuer_cik)
-               VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (key) DO UPDATE
+               SET name = COALESCE(NULLIF(EXCLUDED.name, EXCLUDED.key), security.name)
+               RETURNING *""",
             (key, ref.cusip or None, ref.name or key, ticker, issuer_cik),
         ).fetchone()
 

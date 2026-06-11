@@ -8,10 +8,12 @@ raw ``.sql`` files under ``migrations/`` and are applied by ``app.migrate``.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from app.config import settings
 
@@ -31,18 +33,53 @@ def dsn() -> str:
 
 
 def connect() -> psycopg.Connection:
-    """Open a new connection with dict rows. The caller owns its lifecycle."""
+    """Open a new standalone connection with dict rows.
+
+    Used by the long-lived single-connection callers (worker, backfill, CLI)
+    that own their connection's lifecycle. The API uses the pool below instead.
+    """
     return psycopg.connect(dsn(), row_factory=dict_row)
 
 
-def get_connection() -> Iterator[psycopg.Connection]:
-    """FastAPI dependency that yields a request-scoped connection.
+# Lazily-built so importing this module (e.g. in the worker) never opens a pool.
+# Sync dependencies run on FastAPI's threadpool, so guard the first-build race.
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
 
-    Read endpoints never commit; psycopg rolls back the (empty) transaction
-    when the connection closes.
+
+def get_pool() -> ConnectionPool:
+    """The process-wide connection pool backing the API request path."""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                pool = ConnectionPool(
+                    dsn(),
+                    kwargs={"row_factory": dict_row},
+                    min_size=1,
+                    max_size=10,
+                    open=False,
+                )
+                pool.open()
+                _pool = pool
+    return _pool
+
+
+def close_pool() -> None:
+    """Close the pool on shutdown (FastAPI lifespan). Safe if never opened."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+            _pool = None
+
+
+def get_connection() -> Iterator[psycopg.Connection]:
+    """FastAPI dependency that yields a pooled, request-scoped connection.
+
+    ``pool.connection()`` commits the (empty, read-only) transaction on clean
+    exit and rolls back on exception, then resets and returns the connection to
+    the pool — either way the next request gets a clean connection.
     """
-    conn = connect()
-    try:
+    with get_pool().connection() as conn:
         yield conn
-    finally:
-        conn.close()
