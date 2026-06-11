@@ -36,7 +36,7 @@ def _filing_out(row: dict) -> FilingOut:
 def feed(
     form: str | None = Query(None, description="exact form type, e.g. 13F-HR"),
     since: date | None = Query(None),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, ge=1, le=200),
     conn: psycopg.Connection = Depends(get_connection),
 ) -> list[FilingOut]:
     """Newest-first filing feed across all tracked forms."""
@@ -78,7 +78,7 @@ def trigger_ingest(
     cik: str,
     background: BackgroundTasks,
     forms: str = Query("13F-HR", description="comma-separated form types"),
-    limit: int = Query(4, le=40, description="max filings to pull"),
+    limit: int = Query(4, ge=1, le=40, description="max filings to pull"),
 ) -> dict:
     """Kick off ingestion of a filer's recent filings (runs in the background)."""
     wanted = {f.strip() for f in forms.split(",") if f.strip()}

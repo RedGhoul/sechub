@@ -24,13 +24,29 @@ export default async function FilerPage({
   const { cik } = params;
   const period = searchParams.period;
 
-  let detail: FilerDetail | null = null;
+  // All six requests only depend on cik/period, so fire them together instead of
+  // awaiting the primary one first (every call is no-store, so the saved
+  // round-trip is paid on each load). A failed detail still drives the early
+  // return below.
   let err: string | null = null;
-  try {
-    detail = await api.filer(cik, period);
-  } catch (e) {
-    err = String(e);
-  }
+  const [detail, periods, changes, funds, stakesHeld, issuer]: [
+    FilerDetail | null,
+    Period[],
+    Changes | null,
+    FundHolding[],
+    Stake[],
+    IssuerActivity | null
+  ] = await Promise.all([
+    api.filer(cik, period).catch((e) => {
+      err = String(e);
+      return null;
+    }),
+    api.periods(cik).catch(() => []),
+    api.changes(cik, period).catch(() => null),
+    api.fundHoldings(cik, period).catch(() => []),
+    api.stakesHeld(cik).catch(() => []),
+    api.issuerActivity(cik).catch(() => null),
+  ]);
 
   if (err || !detail) {
     return (
@@ -50,20 +66,6 @@ export default async function FilerPage({
 
   // The investor side and the company side load independently; any one being
   // empty just hides its section rather than failing the page.
-  const [periods, changes, funds, stakesHeld, issuer]: [
-    Period[],
-    Changes | null,
-    FundHolding[],
-    Stake[],
-    IssuerActivity | null
-  ] = await Promise.all([
-    api.periods(cik).catch(() => []),
-    api.changes(cik, period).catch(() => null),
-    api.fundHoldings(cik, period).catch(() => []),
-    api.stakesHeld(cik).catch(() => []),
-    api.issuerActivity(cik).catch(() => null),
-  ]);
-
   const { filer, holdings, total_value, position_count, period_of_report } = detail;
 
   return (

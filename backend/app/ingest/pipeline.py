@@ -75,8 +75,10 @@ def ingest_filing(conn: psycopg.Connection, ref: FilingRef) -> dict | None:
 
         conn.commit()
     except psycopg.errors.UniqueViolation:
-        # Another worker/thread ingested this accession between our
-        # already_ingested() check and the INSERT — treat it as already done.
+        # The only unique constraint reachable here is the filing's accession
+        # number (filer/security upserts use ON CONFLICT), so this means another
+        # worker/thread ingested this accession between our already_ingested()
+        # check and the INSERT — the filing is persisted; treat it as done.
         conn.rollback()
         return None
     except Exception:  # one bad filing shouldn't poison the batch

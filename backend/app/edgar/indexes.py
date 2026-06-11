@@ -8,12 +8,17 @@ last N days of a set of form types into the ingest pipeline. The historical
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
+
+import httpx
 
 from app.edgar.client import edgar_client
 from app.edgar.common import ARCHIVES
 from app.edgar.feed import FilingRef
 from app.edgar.index_parse import parse_form_index
+
+log = logging.getLogger("sechub.indexes")
 
 
 def _quarter(d: date) -> int:
@@ -25,19 +30,31 @@ def daily_index_url(d: date) -> str:
 
 
 def fetch_day(d: date, forms: set[str]) -> list[FilingRef]:
-    """Return filing refs of the requested form types accepted on day ``d``."""
+    """Return filing refs of the requested form types accepted on day ``d``.
+
+    A 404 means there's no index for that day (weekend/holiday) — genuinely
+    empty. Other failures propagate so the caller can tell "no filings" apart
+    from "couldn't fetch"."""
     try:
         text = edgar_client.get_text(daily_index_url(d))
-    except Exception:
-        # Weekends/holidays have no index; treat as empty.
-        return []
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return []
+        raise
     return parse_form_index(text, forms, default_date=d)
 
 
 def fetch_recent_days(forms: set[str], days: int = 3) -> list[FilingRef]:
-    """Backfill the last ``days`` calendar days for the given form types."""
+    """Backfill the last ``days`` calendar days for the given form types.
+
+    One day failing to fetch is logged and skipped rather than aborting the
+    whole window; the worker re-covers this rolling window every cycle."""
     today = date.today()
     out: list[FilingRef] = []
     for offset in range(days):
-        out.extend(fetch_day(today - timedelta(days=offset), forms))
+        d = today - timedelta(days=offset)
+        try:
+            out.extend(fetch_day(d, forms))
+        except Exception:
+            log.exception("daily index fetch failed for %s; skipping", d)
     return out

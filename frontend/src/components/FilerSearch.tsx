@@ -11,10 +11,19 @@ export function FilerSearch() {
   const [results, setResults] = useState<Filer[]>([]);
 
   useEffect(() => {
+    let active = true;
     const t = setTimeout(() => {
-      api.filers(q).then(setResults).catch(() => setResults([]));
+      api
+        .filers(q)
+        .then((r) => active && setResults(r))
+        .catch(() => active && setResults([]));
     }, 200);
-    return () => clearTimeout(t);
+    // `active` invalidates an in-flight request when q changes or we unmount, so
+    // a slow response for an older query can't overwrite newer results.
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
   }, [q]);
 
   return (

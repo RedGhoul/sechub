@@ -124,23 +124,24 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+const enc = encodeURIComponent;
+
 export const api = {
-  filers: (q = "", kind = "") =>
-    get<Filer[]>(`/filers?q=${encodeURIComponent(q)}&kind=${kind}`),
+  filers: (q = "", kind = "") => get<Filer[]>(`/filers?q=${enc(q)}&kind=${enc(kind)}`),
   filer: (cik: string, period?: string) =>
-    get<FilerDetail>(`/filers/${cik}${period ? `?period=${period}` : ""}`),
-  periods: (cik: string) => get<Period[]>(`/filers/${cik}/periods`),
+    get<FilerDetail>(`/filers/${enc(cik)}${period ? `?period=${enc(period)}` : ""}`),
+  periods: (cik: string) => get<Period[]>(`/filers/${enc(cik)}/periods`),
   changes: (cik: string, period?: string) =>
-    get<Changes>(`/filers/${cik}/changes${period ? `?period=${period}` : ""}`),
+    get<Changes>(`/filers/${enc(cik)}/changes${period ? `?period=${enc(period)}` : ""}`),
   fundHoldings: (cik: string, period?: string) =>
-    get<FundHolding[]>(`/filers/${cik}/fund-holdings${period ? `?period=${period}` : ""}`),
-  stakesHeld: (cik: string) => get<Stake[]>(`/filers/${cik}/stakes-held`),
-  issuerActivity: (cik: string) => get<IssuerActivity>(`/filers/${cik}/issuer-activity`),
+    get<FundHolding[]>(`/filers/${enc(cik)}/fund-holdings${period ? `?period=${enc(period)}` : ""}`),
+  stakesHeld: (cik: string) => get<Stake[]>(`/filers/${enc(cik)}/stakes-held`),
+  issuerActivity: (cik: string) => get<IssuerActivity>(`/filers/${enc(cik)}/issuer-activity`),
   feed: (form = "", limit = 50) =>
-    get<Filing[]>(`/filings?limit=${limit}${form ? `&form=${encodeURIComponent(form)}` : ""}`),
+    get<Filing[]>(`/filings?limit=${limit}${form ? `&form=${enc(form)}` : ""}`),
   filing: (id: number) => get<Filing>(`/filings/${id}`),
-  security: (cusip: string) => get<Security>(`/securities/${cusip}`),
-  securityHolders: (cusip: string) => get<Holder[]>(`/securities/${cusip}/holders`),
+  security: (cusip: string) => get<Security>(`/securities/${enc(cusip)}`),
+  securityHolders: (cusip: string) => get<Holder[]>(`/securities/${enc(cusip)}/holders`),
 };
 
 // --- formatting helpers ---

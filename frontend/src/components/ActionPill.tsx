@@ -17,11 +17,16 @@ const FORM_STYLES: Record<string, string> = {
   "5": "bg-amber-500/15 text-amber-400",
 };
 
+// 13D (active/activist) and 13G (passive) get distinct accents from each other
+// and from the neutral fallback.
+const SCHEDULE_STYLES: Record<string, string> = {
+  "13D": "bg-fuchsia-500/15 text-fuchsia-400",
+  "13G": "bg-sky-500/15 text-sky-400",
+};
+
 export function FormPill({ form }: { form: string }) {
   const key = form.startsWith("SC 13D") ? "13D" : form.startsWith("SC 13G") ? "13G" : form;
-  const style =
-    FORM_STYLES[form] ??
-    (key === "13D" ? "bg-fuchsia-500/15 text-fuchsia-400" : "bg-edge text-muted");
+  const style = FORM_STYLES[form] ?? SCHEDULE_STYLES[key] ?? "bg-edge text-muted";
   return <span className={`pill ${style}`}>{form}</span>;
 }
 

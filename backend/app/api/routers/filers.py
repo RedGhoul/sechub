@@ -33,7 +33,7 @@ router = APIRouter(prefix="/filers", tags=["filers"])
 def list_filers(
     q: str | None = Query(None, description="name substring"),
     kind: str | None = Query(None, description="institution|insider|fund"),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, ge=1, le=200),
     conn: psycopg.Connection = Depends(get_connection),
 ) -> list[dict]:
     sql = "SELECT * FROM filer"
@@ -78,15 +78,25 @@ def filer_periods(cik: str, conn: psycopg.Connection = Depends(get_connection)) 
     Powers the historical quarter selector and a portfolio-value-over-time view.
     """
     filer = _resolve_filer(conn, cik)
+    # Aggregate only the latest filing per period so a restatement amendment
+    # (a second 13F under the same period) doesn't double the value/positions.
     rows = conn.execute(
-        """SELECT f.period_of_report AS period,
+        """WITH latest AS (
+               SELECT DISTINCT ON (f.period_of_report) f.id
+                 FROM filing f
+                WHERE f.filer_id = %s AND f.form_type LIKE '13F%%'
+                  AND f.period_of_report IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM holding hx WHERE hx.filing_id = f.id)
+                ORDER BY f.period_of_report, f.filed_at DESC, f.id DESC
+           )
+           SELECT f.period_of_report AS period,
                   COALESCE(SUM(h.value), 0) AS total_value,
                   COUNT(h.id) AS position_count
              FROM filing f
+             JOIN latest l ON l.id = f.id
              JOIN holding h ON h.filing_id = f.id
-            WHERE f.filer_id = %s AND f.form_type LIKE '13F%%'
             GROUP BY f.period_of_report
-            ORDER BY f.period_of_report DESC NULLS LAST""",
+            ORDER BY f.period_of_report DESC""",
         (filer["id"],),
     ).fetchall()
     return [
@@ -119,9 +129,14 @@ def filer_detail(
                        h.investment_discretion, h.voting_sole, h.voting_shared,
                        h.voting_none, {SECURITY_COLS}
                   FROM holding h
-                  JOIN filing f ON h.filing_id = f.id
                   JOIN security s ON h.security_id = s.id
-                 WHERE f.filer_id = %s AND f.period_of_report = %s
+                 WHERE h.filing_id = (
+                       SELECT f.id FROM filing f
+                        WHERE f.filer_id = %s AND f.period_of_report = %s
+                          AND EXISTS (SELECT 1 FROM holding hx WHERE hx.filing_id = f.id)
+                        ORDER BY f.filed_at DESC, f.id DESC
+                        LIMIT 1
+                 )
                  ORDER BY h.value DESC""",
             (filer["id"], target_period),
         ).fetchall()
@@ -205,7 +220,7 @@ def filer_changes(
 def filer_fund_holdings(
     cik: str,
     period: date | None = Query(None, description="YYYY-MM-DD; defaults to latest N-PORT"),
-    limit: int = Query(500, le=2000),
+    limit: int = Query(500, ge=1, le=2000),
     conn: psycopg.Connection = Depends(get_connection),
 ) -> list[FundHoldingOut]:
     """A fund's NPORT-P portfolio for a period (latest by default)."""
@@ -253,7 +268,7 @@ def filer_fund_holdings(
 @router.get("/{cik}/stakes-held", response_model=list[StakeOut])
 def filer_stakes_held(
     cik: str,
-    limit: int = Query(200, le=500),
+    limit: int = Query(200, ge=1, le=500),
     conn: psycopg.Connection = Depends(get_connection),
 ) -> list[StakeOut]:
     """13D/13G beneficial-ownership stakes this filer holds in other companies."""
@@ -294,16 +309,19 @@ def _issuer_securities(conn: psycopg.Connection, filer: dict) -> list[dict]:
     issuer's CIK, so we join on that exactly; for sources that don't (e.g.
     13D/G cover pages), we fall back to a best-effort name match.
     """
+    # Escape LIKE metacharacters so a '%' or '_' in the company name can't act as
+    # a wildcard (which would turn this into an unbounded / wrong-match scan).
+    name_like = filer["name"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return conn.execute(
         "SELECT * FROM security WHERE issuer_cik = %s OR name ILIKE %s",
-        (filer["cik"], filer["name"]),
+        (filer["cik"], name_like),
     ).fetchall()
 
 
 @router.get("/{cik}/issuer-activity", response_model=IssuerActivityOut)
 def filer_issuer_activity(
     cik: str,
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, ge=1, le=500),
     conn: psycopg.Connection = Depends(get_connection),
 ) -> IssuerActivityOut:
     """The 'company' side: insider trades, activist stakes, and institutional
@@ -376,32 +394,33 @@ def filer_issuer_activity(
         for r in stake_rows
     ]
 
-    # Top institutional holders: latest 13F position per filer for these securities.
+    # Top institutional holders: latest 13F position per filer for these
+    # securities. DISTINCT ON dedupes to one row per filer in the DB (rather than
+    # streaming every holding ever recorded into Python), then we take the top by
+    # value.
     holder_rows = conn.execute(
-        f"""SELECT h.shares, h.value, fl.period_of_report, {FILER_COLS}
-              FROM holding h
-              JOIN filing fl ON h.filing_id = fl.id
-              JOIN filer fr ON fl.filer_id = fr.id
-             WHERE h.security_id = ANY(%s)
-             ORDER BY fr.id, fl.period_of_report DESC NULLS LAST""",
-        (sec_ids,),
+        f"""SELECT * FROM (
+                SELECT DISTINCT ON (fr.id)
+                       h.shares, h.value, fl.period_of_report, {FILER_COLS}
+                  FROM holding h
+                  JOIN filing fl ON h.filing_id = fl.id
+                  JOIN filer fr ON fl.filer_id = fr.id
+                 WHERE h.security_id = ANY(%s)
+                 ORDER BY fr.id, fl.period_of_report DESC NULLS LAST
+            ) t
+            ORDER BY value DESC
+            LIMIT %s""",
+        (sec_ids, limit),
     ).fetchall()
-    seen: set[int] = set()
-    top_holders: list[HolderOut] = []
-    for r in holder_rows:
-        if r["filer_id"] in seen:
-            continue
-        seen.add(r["filer_id"])
-        top_holders.append(
-            HolderOut(
-                filer=filer_out(r),
-                shares=r["shares"],
-                value=r["value"],
-                period_of_report=r["period_of_report"],
-            )
+    top_holders = [
+        HolderOut(
+            filer=filer_out(r),
+            shares=r["shares"],
+            value=r["value"],
+            period_of_report=r["period_of_report"],
         )
-    top_holders.sort(key=lambda h: h.value, reverse=True)
-    top_holders = top_holders[:limit]
+        for r in holder_rows
+    ]
 
     return IssuerActivityOut(
         securities=[SecurityOut.model_validate(s) for s in securities],

@@ -65,6 +65,9 @@ def backfill_quarter(conn: psycopg.Connection, year: int, quarter: int, forms: s
     conn.commit()
     log.info("%dQ%d: %d candidate filings", year, quarter, len(refs))
 
+    # A resumed segment already ingested some filings (which are now skipped as
+    # idempotent); keep the persisted total cumulative so it never regresses.
+    prior = seg["filings_ingested"] or 0
     ingested = 0
     for ref in refs:
         if ingest_filing(conn, ref) is not None:
@@ -72,14 +75,14 @@ def backfill_quarter(conn: psycopg.Connection, year: int, quarter: int, forms: s
             if ingested % _CHECKPOINT_EVERY == 0:
                 conn.execute(
                     "UPDATE backfill_progress SET filings_ingested = %s WHERE id = %s",
-                    (ingested, seg["id"]),
+                    (prior + ingested, seg["id"]),
                 )
                 conn.commit()
-                log.info("%dQ%d: %d ingested so far", year, quarter, ingested)
+                log.info("%dQ%d: %d ingested so far", year, quarter, prior + ingested)
 
     conn.execute(
         "UPDATE backfill_progress SET filings_ingested = %s, completed_at = %s WHERE id = %s",
-        (ingested, datetime.now(tz=timezone.utc), seg["id"]),
+        (prior + ingested, datetime.now(tz=timezone.utc), seg["id"]),
     )
     conn.commit()
     log.info("%dQ%d done: %d new filings", year, quarter, ingested)
@@ -91,7 +94,14 @@ def run_backfill(since_year: int, forms: set[str]) -> None:
     total = 0
     try:
         for year, quarter in full_index.quarters_in_range(since_year):
-            total += backfill_quarter(conn, year, quarter, forms)
+            try:
+                total += backfill_quarter(conn, year, quarter, forms)
+            except Exception:
+                # A transient fetch/DB failure for one quarter must not abort the
+                # whole job or mark the quarter complete. Roll back any partial
+                # state, leave it incomplete so the next run retries it, move on.
+                conn.rollback()
+                log.exception("backfill failed for %dQ%d; will retry next run", year, quarter)
     finally:
         conn.close()
     log.info("backfill complete: %d new filings total", total)

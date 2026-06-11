@@ -2,18 +2,11 @@ import Link from "next/link";
 import { api, fmtUSD, fmtShares, Holder, Security } from "@/lib/api";
 
 export default async function SecurityPage({ params }: { params: { cusip: string } }) {
-  let security: Security | null = null;
-  let holders: Holder[] = [];
-  try {
-    security = await api.security(params.cusip);
-  } catch {
-    security = null;
-  }
-  try {
-    holders = await api.securityHolders(params.cusip);
-  } catch {
-    holders = [];
-  }
+  // Independent requests — fetch them together rather than in series.
+  const [security, holders]: [Security | null, Holder[]] = await Promise.all([
+    api.security(params.cusip).catch(() => null),
+    api.securityHolders(params.cusip).catch(() => []),
+  ]);
 
   return (
     <div className="space-y-4">

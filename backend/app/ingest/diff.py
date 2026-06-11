@@ -15,13 +15,25 @@ import psycopg
 def _positions_for_period(
     conn: psycopg.Connection, filer_id: int, period: date
 ) -> dict[int, tuple[int, int]]:
-    """Map security_id -> (shares, value) summed across the filer's filing(s)
-    for ``period`` (an amended 13F can split positions across filings)."""
+    """Map security_id -> (shares, value) for the filer's *latest* 13F filing for
+    ``period``.
+
+    A 13F-HR/A amendment re-files under the same period; the common
+    "restatement" type re-states the full information table, so summing across
+    every filing for the period would double every position (and emit bogus ADD
+    rows). We therefore read only the most recently filed table that actually
+    carries holdings."""
     rows = conn.execute(
         """SELECT h.security_id, h.shares, h.value
              FROM holding h
-             JOIN filing f ON h.filing_id = f.id
-            WHERE f.filer_id = %s AND f.period_of_report = %s""",
+            WHERE h.filing_id = (
+                  SELECT f.id
+                    FROM filing f
+                   WHERE f.filer_id = %s AND f.period_of_report = %s
+                     AND EXISTS (SELECT 1 FROM holding hx WHERE hx.filing_id = f.id)
+                   ORDER BY f.filed_at DESC, f.id DESC
+                   LIMIT 1
+            )""",
         (filer_id, period),
     ).fetchall()
     agg: dict[int, tuple[int, int]] = {}
