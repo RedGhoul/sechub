@@ -22,15 +22,17 @@ def parse(xml: bytes) -> NportFiling:
     These files routinely run to tens of MB, so we use ``iterparse`` and free
     each ``invstOrSec`` subtree (and its already-processed siblings) as we go,
     keeping memory bounded rather than building the whole tree at once."""
-    period: date | None = None
+    rep_pd_date: date | None = None
+    rep_pd_end: date | None = None
     holdings: list[FundHoldingRow] = []
 
-    context = etree.iterparse(BytesIO(xml), events=("end",), recover=True, huge_tree=True)
+    context = etree.iterparse(BytesIO(xml), events=("end",))
     for _event, elem in context:
         tag = local_name(elem.tag).lower()
-        if tag in ("reppddate", "reppdend"):
-            if period is None:
-                period = _parse_date(text(elem))
+        if tag == "reppddate" and rep_pd_date is None:
+            rep_pd_date = _parse_date(text(elem))
+        elif tag == "reppdend" and rep_pd_end is None:
+            rep_pd_end = _parse_date(text(elem))
         elif tag == "invstorsec":
             name = text(elem, "name") or text(elem, "title") or ""
             cusip = (text(elem, "cusip") or "").strip().upper()
@@ -47,7 +49,9 @@ def parse(xml: bytes) -> NportFiling:
             while elem.getprevious() is not None:
                 del elem.getparent()[0]
 
-    return NportFiling(period_of_report=period, holdings=holdings)
+    # Same preference as the original DOM parser: repPdDate, then repPdEnd
+    # (regardless of which appears first in the document).
+    return NportFiling(period_of_report=rep_pd_date or rep_pd_end, holdings=holdings)
 
 
 def _to_int(value: str | None) -> int:
